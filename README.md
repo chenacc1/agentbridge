@@ -1,6 +1,7 @@
 # AgentBridge MVP
 
 [中文文档](./README.zh-CN.md) | [English](./README.md)
+
 AgentBridge lets a phone opened from WeChat's scanner control coding agents running on this computer. The desktop and phone use the same append-only event stream, so messages, tool activity, approvals, and task state stay in sync.
 
 This repository is a working local-first MVP. It includes:
@@ -13,6 +14,7 @@ This repository is a working local-first MVP. It includes:
 - real OpenAI Codex App Server and Claude Code CLI adapters;
 - a real DeepSeek Harness ACP adapter and a truthful ZCode native-remote handoff.
 - a DSH Desktop `/phone` bundle that binds the exact open Desktop conversation.
+
 ## See how it works
 
 ![AgentBridge architecture: a local desktop bridge connects paired phone control to approved coding-agent adapters.](./docs/assets/architecture.svg)
