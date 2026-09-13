@@ -24,6 +24,19 @@ The phone receives a short-lived QR pairing link, then sends commands and receiv
 ![AgentBridge scan-to-control flow: start locally, scan once, pair the phone, then continue the selected coding-agent session.](./docs/assets/phone-flow.svg)
 
 For the network and access boundaries, see the [security guide diagram](./docs/assets/security-boundaries.svg). A complete Chinese guide is available in [README.zh-CN.md](./README.zh-CN.md).
+### Front-end previews
+
+#### Desktop console
+
+![Desktop AgentBridge console, with the pairing and device-management strip intentionally excluded from this public example.](./docs/assets/ui-desktop.png)
+
+The desktop view brings the selected Agent session, model controls, activity timeline, and message composer into one workspace. The pairing QR and device-management area are deliberately excluded from this public screenshot because they contain short-lived or device-specific data.
+
+#### Mobile control
+
+<p align="center"><img src="./docs/assets/ui-mobile.png" alt="Mobile AgentBridge control console" width="360" /></p>
+
+The same session adapts to a narrow phone viewport: use the control handoff, select supported models and reasoning level, follow task events, then send a message without exposing credentials outside the computer.
 
 ## Install `/phone` from a GitHub release
 
