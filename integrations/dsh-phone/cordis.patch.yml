@@ -1,0 +1,5 @@
+# AgentBridge DSH Desktop integration. Loaded after the official base/web
+# bundles so the public command registry and live Agent runtime already exist.
+- insert:
+    - id: agentbridge-phone
+      name: '@agentbridge/dsh-phone'

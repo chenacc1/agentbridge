@@ -1,0 +1,14 @@
+node_modules/
+.agentbridge/
+.generated/
+.impeccable/
+*.log
+.env
+*.tgz
+
+# Internal planning and research notes are not part of the distributable project.
+task_plan.md
+findings.md
+progress.md
+docs/research/
+docs/tailscale-remote-mode-research.md

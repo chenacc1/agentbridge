@@ -1,0 +1,37 @@
+{
+  "name": "agentbridge-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Use WeChat QR scanning to control local coding agents through a secure mobile web console.",
+  "files": [
+    "bin",
+    "src",
+    "public",
+    "scripts",
+    "integrations/dsh-phone",
+    ".env.example",
+    "启动 AgentBridge.cmd",
+    "启动 AgentBridge 远程模式.cmd",
+    "启动 AgentBridge ZeroTier 远程模式.cmd",
+    "启动 AgentBridge Cloudflare 远程模式.cmd",
+    "docs/RELEASING.md"
+  ],
+  "bin": {
+    "agentbridge": "bin/agentbridge.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "install:dsh-phone": "node scripts/install-dsh-phone.mjs",
+    "uninstall:dsh-phone": "node scripts/uninstall-dsh-phone.mjs",
+    "test": "node --test",
+    "check": "node --check src/server.js && node --check src/cli.js && node --check src/cc-switch-models.js && node --check src/adapters/claude.js && node --check src/adapters/codex.js && node --check src/adapters/deepseek-harness.js && node --check src/adapters/dsh-desktop.js && node --check src/dsh-desktop-channels.js && node --check integrations/dsh-phone/lib/index.js && node --check src/adapters/zcode-native.js && node --check public/markdown.js && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4"
+  }
+}
