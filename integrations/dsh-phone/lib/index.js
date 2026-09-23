@@ -113,6 +113,8 @@ class PhoneConnections {
       pendingEvents: [],
       phoneMessageIds: new Set(),
       eventTimer: null,
+      flushing: false,
+      retryPending: false,
     };
     this.bySession.set(agent.session.id, state);
     void this.poll(state);
@@ -230,18 +232,26 @@ class PhoneConnections {
       ? "phone"
       : "desktop";
     state.pendingEvents.push({ event, origin });
-    if (state.pendingEvents.length >= 50) return void this.flushEvents(state);
-    if (!state.eventTimer) {
-      state.eventTimer = setTimeout(() => {
-        state.eventTimer = null;
-        void this.flushEvents(state);
-      }, EVENT_BATCH_DELAY_MS);
-    }
+    this.scheduleFlush(state);
+  }
+
+  // Only one batch may be in flight at a time. Overlapping flushes used to let a
+  // newer batch overtake an older one, which reordered a turn's streamed text on
+  // the phone and made the bridge treat the older batch as already seen.
+  scheduleFlush(state) {
+    if (state.flushing || state.retryPending || state.eventTimer || state.controller.signal.aborted) return;
+    const delay = state.pendingEvents.length >= 50 ? 0 : EVENT_BATCH_DELAY_MS;
+    state.eventTimer = setTimeout(() => {
+      state.eventTimer = null;
+      void this.flushEvents(state);
+    }, delay);
   }
 
   async flushEvents(state) {
-    if (state.controller.signal.aborted || state.pendingEvents.length === 0) return;
+    if (state.flushing || state.retryPending || state.controller.signal.aborted || state.pendingEvents.length === 0) return;
+    state.flushing = true;
     const events = state.pendingEvents.splice(0, 200);
+    let failure = null;
     try {
       const response = await fetch(`${state.origin}${state.channel.eventsPath}`, {
         method: "POST",
@@ -254,13 +264,24 @@ class PhoneConnections {
       });
       await readResponse(response);
     } catch (error) {
-      if (!state.controller.signal.aborted) {
-        state.pendingEvents.unshift(...events);
-        this.ctx.logger.warn(`AgentBridge event sync failed: ${textFromError(error)}`);
-        await sleep(1_000, state.controller.signal);
-        if (!state.controller.signal.aborted) void this.flushEvents(state);
-      }
+      failure = error;
+      if (!state.controller.signal.aborted) state.pendingEvents.unshift(...events);
+    } finally {
+      state.flushing = false;
     }
+    if (state.controller.signal.aborted) return;
+
+    if (failure) {
+      this.ctx.logger.warn(`AgentBridge event sync failed: ${textFromError(failure)}`);
+      // Hold everything back until the failed batch has been retried, so the
+      // bridge never receives a newer batch ahead of an older one.
+      state.retryPending = true;
+      await sleep(1_000, state.controller.signal);
+      state.retryPending = false;
+      if (!state.controller.signal.aborted) void this.flushEvents(state);
+      return;
+    }
+    if (state.pendingEvents.length) this.scheduleFlush(state);
   }
 
   async poll(state) {

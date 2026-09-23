@@ -12,10 +12,14 @@ export class ClaudeAdapter {
   id = "claude";
   label = "Claude Code";
   capabilities = {
+    create: true,
+    attach: true,
+    discover: false,
     streaming: true,
-    approvals: false,
+    approve: false,
     resume: true,
     cancel: true,
+    selectModel: true,
     realAgent: true,
   };
   #runs = new Map();

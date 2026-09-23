@@ -1,3 +1,5 @@
+import { describeAdapterCapabilities } from "./adapters/capabilities.js";
+
 export class AdapterRegistry {
   #adapters = new Map();
 
@@ -14,9 +16,8 @@ export class AdapterRegistry {
     return Promise.all([...this.#adapters.values()].map(async (adapter) => ({
       id: adapter.id,
       label: adapter.label,
-      capabilities: adapter.capabilities,
+      capabilities: describeAdapterCapabilities(adapter),
       availability: await adapter.detect(),
     })));
   }
 }
-

@@ -4,10 +4,14 @@ export class EchoAdapter {
   id = "echo";
   label = "Echo Demo";
   capabilities = {
+    create: true,
+    attach: false,
+    discover: false,
     streaming: true,
-    approvals: true,
+    approve: false,
     resume: false,
     cancel: true,
+    selectModel: false,
     realAgent: false,
   };
   #runs = new Map();
@@ -51,4 +55,3 @@ export class EchoAdapter {
     throw Object.assign(new Error("Echo has no pending approval"), { statusCode: 409 });
   }
 }
-

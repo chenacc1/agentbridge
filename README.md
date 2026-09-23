@@ -24,6 +24,8 @@ The phone receives a short-lived QR pairing link, then sends commands and receiv
 ![AgentBridge scan-to-control flow: start locally, scan once, pair the phone, then continue the selected coding-agent session.](./docs/assets/phone-flow.svg)
 
 For the network and access boundaries, see the [security guide diagram](./docs/assets/security-boundaries.svg). A complete Chinese guide is available in [README.zh-CN.md](./README.zh-CN.md).
+
+For a visual, interactive explanation of Workspaces, conversations, QR pairing, and all four remote modes, open [`docs/agentbridge-product-guide.html`](./docs/agentbridge-product-guide.html) locally in a browser.
 ### Front-end previews
 
 #### Desktop console
@@ -56,7 +58,7 @@ Requirements: Node.js 22 or newer. Codex, Claude Code, and DeepSeek Harness are 
 
 ```powershell
 npm install
-$env:AGENTBRIDGE_PROJECTS = "agentbridge=D:\codex_project\手机远程操控agent"
+$env:AGENTBRIDGE_PROJECTS = "agentbridge=D:\projects\agentbridge"
 npm start
 ```
 
@@ -217,6 +219,12 @@ Restart the Codex desktop project, then type `/phone` in a local-project convers
 
 After scanning, the phone page can select only models and reasoning efforts returned by the local Codex App Server for the signed-in account. The choice is applied to later phone turns in this AgentBridge session; it does not modify your global Codex settings or invent unavailable models.
 
+AgentBridge can also discover persisted Codex threads for one registered workspace through the public App Server `thread/list` method. Discovery uses the workspace's exact canonical `cwd`, reads every cursor page, and merges results into the local Bridge session catalog without resuming them. It does not identify or guess which thread is currently visible in Codex Desktop; choose a listed thread, supply a known thread ID to `/phone`, or create a new conversation.
+
+The authenticated catalog API is `GET /api/conversations?workspaceId=<workspace-id>&adapterId=codex`. It reads only the local catalog by default. Add `&refresh=1` for an explicit Provider refresh; protocol mismatches return a degraded diagnostic instead of falling back to private transcript files.
+
+The console now presents a Workspace list first and the selected Workspace's conversations second. “同步历史” is always an explicit action, and creating a conversation defaults to the current Workspace. The same navigation is used in direct, ZeroTier, and Cloudflare remote modes because those modes change only how the phone reaches AgentBridge, not the local Workspace/session catalog.
+
 You can optionally run `npm link` once and shorten these commands to `agentbridge phone ...`. The installed Codex skill is the convenient project-directory entry point; the CLI remains the reliable path when you already know the exact Codex thread ID to resume.
 
 ### Which model does it use?
@@ -331,7 +339,7 @@ Windows Firewall may ask whether Node.js can accept private-network connections.
 
 The QR contains a short-lived, single-use pairing code, not an Agent credential. Successful exchange creates an opaque device token stored in an `HttpOnly`, `SameSite=Strict` cookie. Raw tokens are not persisted; their SHA-256 digests are held by the bridge. Mutating requests require same-origin checks, command IDs prevent accidental replay, and only one device owns a session's input lease at a time. Stop is a two-click action in the UI.
 
-This MVP uses plain HTTP and therefore is suitable only for a trusted LAN or the implemented private Tailscale tailnet mode. Do **not** forward port 8787 directly to the public Internet. A future public HTTPS relay would additionally require explicit proxy trust rules, multi-user authorization, device revocation, and a second pairing confirmation.
+LAN, Tailscale, and ZeroTier modes use plain HTTP inside a trusted local or private virtual network. Do **not** forward port 8787 directly through a router. Cloudflare mode is different: the phone reaches a public HTTPS Tunnel, while AgentBridge additionally requires its generated access key before pairing or authenticated APIs are reachable. A long-lived multi-user public service would still require stronger account authorization, proxy identity validation, encrypted-at-rest logs, and an explicit recovery model.
 
 Agent credentials and child processes remain on the computer. The current MVP does not yet provide multi-user authorization, encrypted-at-rest event logs, recovery of live child processes after a bridge restart, or a cloud Relay.
 
@@ -343,18 +351,24 @@ A production Official Account or WeCom integration is a separate channel adapter
 
 ## API map
 
+- `POST /api/access`: exchange the Cloudflare-mode access key for a short-lived HttpOnly gate cookie.
 - `GET /api/bootstrap` and `GET /api/pairing/qr.svg`: loopback-only desktop pairing bootstrap.
 - `GET /api/return-qr.svg`: loopback-only QR for the fixed, non-secret return address.
 - `POST /api/pairings/exchange`: consume the one-time code and set a device cookie.
 - `POST /api/recent-session`: record the calling device's last active Bridge session for safe root-address resume.
+- `GET /api/devices` and `POST /api/devices/:id/revoke`: list and revoke paired devices.
 - `POST /api/local/phone`: loopback-only current-directory/session launcher used by the CLI.
+- `POST /api/local/workspaces`: loopback-only registration of an existing local directory as a Workspace.
 - `POST /api/local/dsh-desktop/register`: loopback-only registration of the exact live DSH Agent from `/phone`.
 - `GET /api/local/dsh-desktop/channels/:id/poll`: authenticated local companion command queue.
 - `POST /api/local/dsh-desktop/channels/:id/events`: authenticated DSH event ingestion.
-- `GET /api/state`: machines, adapters, projects, sessions, and event cursor.
-- `GET /api/events?after=<seq>`: resumable SSE stream.
+- `GET /api/workspaces`: authenticated, path-redacted Workspace catalog.
+- `GET /api/conversations?workspaceId=...`: read the local conversation catalog; add `adapterId=codex&refresh=1` for explicit Provider discovery.
+- `GET /api/state`: machine, device, adapters, Workspaces, sessions, and event cursor.
+- `GET /api/events?after=<seq>`: resumable SSE stream. The `after` parameter is optional; the phone relies on the browser's own `Last-Event-ID`, so an automatic reconnect resumes instead of replaying the whole buffer.
 - `POST /api/sessions`: create an adapter session.
 - `POST /api/sessions/:id/messages`: send an idempotent command.
+- `POST /api/sessions/:id/model`: apply a model and optional reasoning choice from the Provider-supplied allowlist.
 - `POST /api/sessions/:id/control`: claim or explicitly take over input control.
 - `POST /api/sessions/:id/stop`: interrupt the active turn.
 - `POST /api/approvals/:id`: resolve a Codex approval request.
@@ -364,14 +378,29 @@ A production Official Account or WeCom integration is a separate channel adapter
 ```powershell
 npm run check
 npm test
+npm run verify:mobile   # optional; needs Chrome or Edge
 ```
 
-The tests cover configuration, one-time and session-bound pairing, event persistence and cursors, project allowlisting, loopback current-directory registration, adapter attach/resume, DSH Desktop channel authentication and event mapping, idempotent plugin installation/removal, CLI skill generation, command idempotency, control leases, authenticated HTTP flows, and SSE replay.
+The tests cover configuration, one-time and session-bound pairing, event persistence and cursors, project allowlisting, loopback current-directory registration, adapter attach/resume, DSH Desktop channel authentication and event mapping, transcript folding and history retention, delta coalescing, concurrent channel ingest ordering, idempotent plugin installation/removal, CLI skill generation, command idempotency, control leases, authenticated HTTP flows, and SSE replay.
+
+`npm run verify:mobile` drives the real mobile page in headless Chrome against a real bridge server, using the real DSH Desktop channel pipeline, and asserts the whole conversation is displayed: after a reload, while a reply streams, and once it is committed. Set `CHROME_PATH` if the browser is not in a standard location.
 
 ## Design notes
 
 The architecture and Happy project comparison are documented in:
 
 - [`docs/architecture/wechat-multi-agent-remote-control.md`](./docs/architecture/wechat-multi-agent-remote-control.md)
+- [`docs/软件功能与前端执行逻辑.md`](./docs/%E8%BD%AF%E4%BB%B6%E5%8A%9F%E8%83%BD%E4%B8%8E%E5%89%8D%E7%AB%AF%E6%89%A7%E8%A1%8C%E9%80%BB%E8%BE%91.md)
 
 Happy is useful mainly as validation of the local daemon + remote client + session streaming shape. AgentBridge deliberately adds a WeChat-friendly pairing/channel layer, a capability-driven multi-Agent adapter boundary, explicit control leases, and server-side project aliases instead of copying Happy wholesale.
+
+### Streaming and the conversation window
+
+Agents emit one event per token, and a single long turn can produce thousands of them. Over a tunnel to a phone that traffic is what used to make the console crawl and arrive incomplete, so the pipeline treats token deltas as progress rather than history:
+
+- `SessionManager` coalesces deltas per turn (about 120 ms) and addresses each chunk by character `offset`. Any non-delta event flushes first, so a committed message always lands after its own streamed prefix.
+- `EventStore` keeps at most one delta per turn, merging later chunks into it, so the replay window stays full of messages instead of tokens. Committed messages and status changes are never evicted by token chatter. The on-disk log still records each chunk as it arrived.
+- Clients fold deltas with `text = current.slice(0, offset) + text`, which is idempotent: a merged snapshot, a replay, or an out-of-order chunk rewrites the same text instead of duplicating or losing it.
+- `public/transcript.js` holds that folding logic plus entry building, so it can be tested directly with Node and the real Markdown renderer. `public/app.js` only does DOM work: it renders on a throttle, diffs entries by key, and rewrites just the reply that is still growing.
+
+A phone that reconnects mid-turn still sees the in-progress text, because the retained delta carries everything streamed so far.

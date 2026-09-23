@@ -6,10 +6,14 @@ export class ZCodeNativeAdapter {
   id = "zcode";
   label = "ZCode（原生远控）";
   capabilities = {
+    create: false,
+    attach: false,
+    discover: false,
     streaming: false,
-    approvals: false,
+    approve: false,
     resume: false,
     cancel: false,
+    selectModel: false,
     realAgent: true,
     nativeRemoteControl: true,
   };

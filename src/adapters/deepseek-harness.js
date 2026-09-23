@@ -40,10 +40,14 @@ export class DeepSeekHarnessAdapter {
   id = "deepseek-harness";
   label = "DeepSeek Harness";
   capabilities = {
+    create: true,
+    attach: true,
+    discover: false,
     streaming: true,
-    approvals: true,
+    approve: true,
     resume: true,
     cancel: true,
+    selectModel: false,
     realAgent: true,
   };
   #spawnProcess;

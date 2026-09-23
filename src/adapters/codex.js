@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { lines, spawnCommand as spawnProcess, probeCommand as probeProcess } from "./process-utils.js";
 
 function safePayload(value) {
@@ -55,14 +56,43 @@ function modelDirectory(result) {
   };
 }
 
+function pathKey(value) {
+  const normalized = path.normalize(path.resolve(value));
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function unixSecondsToIso(value) {
+  if (!Number.isSafeInteger(value)) return null;
+  const timestamp = new Date(value * 1000);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+}
+
+function discoveredConversation(thread, workspacePath) {
+  if (!thread || typeof thread.id !== "string" || !thread.id) return null;
+  if (typeof thread.cwd !== "string" || pathKey(thread.cwd) !== pathKey(workspacePath)) return null;
+  const title = String(thread.name || thread.preview || "Codex conversation").trim().slice(0, 100) || "Codex conversation";
+  const createdAt = unixSecondsToIso(thread.createdAt);
+  const lastActiveAt = unixSecondsToIso(thread.recencyAt ?? thread.updatedAt ?? thread.createdAt);
+  return {
+    providerConversationId: thread.id.slice(0, 200),
+    title,
+    ...(createdAt ? { createdAt } : {}),
+    ...(lastActiveAt ? { lastActiveAt } : {}),
+  };
+}
+
 export class CodexAdapter {
   id = "codex";
   label = "OpenAI Codex";
   capabilities = {
+    create: true,
+    attach: true,
+    discover: true,
     streaming: true,
-    approvals: true,
+    approve: true,
     resume: true,
     cancel: true,
+    selectModel: true,
     realAgent: true,
   };
   #handles = new Map();
@@ -74,6 +104,73 @@ export class CodexAdapter {
 
   async detect() {
     return this.probe("codex");
+  }
+
+  async discoverConversations({ workspace } = {}) {
+    const workspacePath = workspace?.canonicalPath;
+    if (typeof workspacePath !== "string" || !path.isAbsolute(workspacePath)) {
+      throw Object.assign(new Error("Codex discovery requires an absolute workspace path"), { statusCode: 400 });
+    }
+
+    let handle;
+    try {
+      handle = await this.#connect({ cwd: workspacePath });
+      const conversations = [];
+      const providerIds = new Set();
+      const cursors = new Set();
+      let cursor = null;
+      let pages = 0;
+      do {
+        const result = await this.#request(handle, "thread/list", {
+          cursor,
+          limit: 100,
+          sortKey: "updated_at",
+          sortDirection: "desc",
+          sourceKinds: ["cli", "vscode", "appServer"],
+          archived: false,
+          cwd: workspacePath,
+        });
+        if (!Array.isArray(result?.data)) throw new Error("thread/list returned an invalid data field");
+        pages += 1;
+        for (const thread of result.data) {
+          const normalized = discoveredConversation(thread, workspacePath);
+          if (!normalized || providerIds.has(normalized.providerConversationId)) continue;
+          providerIds.add(normalized.providerConversationId);
+          conversations.push(normalized);
+        }
+        cursor = typeof result.nextCursor === "string" && result.nextCursor ? result.nextCursor : null;
+        if (cursor) {
+          if (cursors.has(cursor)) throw new Error("thread/list returned a repeated pagination cursor");
+          cursors.add(cursor);
+        }
+        if (pages >= 50 && cursor) throw new Error("thread/list exceeded the safe pagination limit");
+      } while (cursor);
+
+      return {
+        conversations,
+        diagnostics: {
+          status: "available",
+          protocol: "codex-app-server/thread-list-v2",
+          pages,
+        },
+      };
+    } catch (error) {
+      throw Object.assign(
+        new Error(`Codex workspace discovery is unavailable: ${error.message}`),
+        {
+          statusCode: 501,
+          code: "ADAPTER_DISCOVERY_UNAVAILABLE",
+          diagnostics: {
+            status: "degraded",
+            protocol: "codex-app-server/thread-list-v2",
+            reason: String(error.message || "thread/list failed").slice(0, 500),
+          },
+          cause: error,
+        },
+      );
+    } finally {
+      if (handle) await this.dispose(handle);
+    }
   }
 
   async start(context) {

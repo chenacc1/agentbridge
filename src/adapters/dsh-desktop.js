@@ -77,7 +77,17 @@ export async function dshEventToBridge(record, state, emit) {
 export class DshDesktopAdapter {
   id = "deepseek-harness-desktop";
   label = "DeepSeek Harness Desktop";
-  capabilities = { streaming: true, stop: true, resume: true, sameConversation: true };
+  capabilities = {
+    create: false,
+    attach: true,
+    discover: false,
+    resume: true,
+    cancel: true,
+    approve: false,
+    selectModel: true,
+    streaming: true,
+    sameConversation: true,
+  };
 
   constructor({ channels }) {
     this.channels = channels;

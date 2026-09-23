@@ -4,10 +4,101 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createBridge } from "../src/server.js";
+import { AdapterRegistry } from "../src/adapter-registry.js";
 
 function cookieFrom(response) {
   return response.headers.get("set-cookie").split(";", 1)[0];
 }
+
+test("Cloudflare mode keeps the loopback desktop login usable over HTTP", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-cloudflare-local-"));
+  const config = {
+    host: "127.0.0.1",
+    port: 0,
+    advertisedOrigin: "https://example.trycloudflare.com",
+    accessKey: "test-access-key",
+    secureCookies: true,
+    dataDir: directory,
+    projects: new Map([["demo", directory]]),
+    pairingTtlMs: 10_000,
+    sessionTtlMs: 60_000,
+    machineName: "Cloudflare local test",
+  };
+  const bridge = await createBridge({ config });
+  await new Promise((resolve) => bridge.server.listen(0, "127.0.0.1", resolve));
+  const address = bridge.server.address();
+  const origin = `http://127.0.0.1:${address.port}`;
+  t.after(async () => {
+    bridge.server.closeAllConnections();
+    await new Promise((resolve) => bridge.server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const login = await fetch(`${origin}/api/local-session`, {
+    method: "POST",
+    headers: { origin },
+  });
+  assert.equal(login.status, 201);
+  assert.doesNotMatch(login.headers.get("set-cookie"), /; Secure/i);
+
+  const cookie = cookieFrom(login);
+  const state = await fetch(`${origin}/api/state`, { headers: { cookie } });
+  assert.equal(state.status, 200);
+  const deviceId = (await state.json()).device.id;
+
+  const revoke = await fetch(`${origin}/api/devices/${deviceId}/revoke`, {
+    method: "POST",
+    headers: { origin, cookie, "content-type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(revoke.status, 200);
+  assert.doesNotMatch(revoke.headers.get("set-cookie"), /; Secure/i);
+});
+
+test("bridge startup reloads persisted sessions as offline without starting providers", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-bridge-restart-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const makeConfig = () => ({
+    host: "127.0.0.1",
+    port: 0,
+    advertisedOrigin: "http://127.0.0.1:0",
+    secureCookies: false,
+    dataDir: directory,
+    projects: new Map([["demo", directory]]),
+    pairingTtlMs: 10_000,
+    sessionTtlMs: 60_000,
+    machineName: "Restart test",
+  });
+  let starts = 0;
+  const registry = new AdapterRegistry();
+  registry.register({
+    id: "restartable",
+    label: "Restartable",
+    capabilities: { create: true, attach: true, resume: true },
+    detect: async () => ({ available: true, supported: true }),
+    start: async () => {
+      starts += 1;
+      return { providerSessionId: "restart-provider-123" };
+    },
+    attach: async (_context, providerSessionId) => ({ providerSessionId }),
+  });
+
+  const firstBridge = await createBridge({ config: makeConfig(), registry });
+  const created = await firstBridge.sessions.create({
+    adapterId: "restartable",
+    projectAlias: "demo",
+    title: "Restart me",
+    commandId: "restart-create",
+    device: { id: "device-a", deviceName: "A" },
+  });
+  const secondBridge = await createBridge({ config: makeConfig(), registry });
+  const restored = secondBridge.sessions.list()[0];
+
+  assert.equal(restored.id, created.id);
+  assert.equal(restored.status, "offline");
+  assert.equal(restored.providerSessionId, "restart-provider-123");
+  assert.equal(starts, 1, "Bridge startup must not start a second provider process");
+});
 
 test("HTTP bridge completes local login, one-time pairing, idempotent command, and SSE replay", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-server-"));
@@ -49,6 +140,16 @@ test("HTTP bridge completes local login, one-time pairing, idempotent command, a
   assert.equal(markdownScript.headers.get("cache-control"), "no-store");
   assert.match(await markdownScript.text(), /renderMessageMarkdown/);
 
+  const adapterCapabilitiesScript = await fetch(`${origin}/adapter-capabilities.js`);
+  assert.equal(adapterCapabilitiesScript.status, 200);
+  assert.equal(adapterCapabilitiesScript.headers.get("cache-control"), "no-store");
+  assert.match(await adapterCapabilitiesScript.text(), /adapterCreationPresentation/);
+
+  const workspaceNavigationScript = await fetch(`${origin}/workspace-navigation.js`);
+  assert.equal(workspaceNavigationScript.status, 200);
+  assert.equal(workspaceNavigationScript.headers.get("cache-control"), "no-store");
+  assert.match(await workspaceNavigationScript.text(), /resolveWorkspaceNavigation/);
+
   const returnQr = await fetch(`${origin}/api/return-qr.svg`);
   assert.equal(returnQr.status, 200);
   assert.match(returnQr.headers.get("content-type"), /image\/svg\+xml/);
@@ -62,6 +163,16 @@ test("HTTP bridge completes local login, one-time pairing, idempotent command, a
   const state = await stateResponse.json();
   assert.equal(state.machine.name, "Test machine");
   assert.equal(state.projects[0], "demo");
+  assert.equal(state.workspaces.length, 1);
+  assert.equal(state.workspaces[0].alias, "demo");
+  assert.match(state.workspaces[0].id, /^ws_/);
+  assert.equal("canonicalPath" in state.workspaces[0], false);
+
+  const workspacesResponse = await fetch(`${origin}/api/workspaces`, { headers: { cookie: desktopCookie } });
+  assert.equal(workspacesResponse.status, 200);
+  const workspaces = await workspacesResponse.json();
+  assert.ok(Number.isSafeInteger(workspaces.revision));
+  assert.deepEqual(workspaces.items, state.workspaces);
 
   const bootstrap = await (await fetch(`${origin}/api/bootstrap`)).json();
   const mobileLogin = await fetch(`${origin}/api/pairings/exchange`, {
@@ -111,6 +222,76 @@ test("HTTP bridge completes local login, one-time pairing, idempotent command, a
   assert.match(new TextDecoder().decode(chunk.value), /event: agent-event/);
 });
 
+test("conversation API lists the local catalog and refreshes provider discovery on demand", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-conversation-api-"));
+  const config = {
+    host: "127.0.0.1",
+    port: 0,
+    advertisedOrigin: "http://127.0.0.1:0",
+    secureCookies: false,
+    dataDir: directory,
+    projects: new Map([["demo", directory]]),
+    pairingTtlMs: 10_000,
+    sessionTtlMs: 60_000,
+    machineName: "Conversation API test",
+  };
+  let discoveryCalls = 0;
+  const registry = new AdapterRegistry();
+  registry.register({
+    id: "discoverable",
+    label: "Discoverable",
+    capabilities: { create: false, attach: true, discover: true, resume: true },
+    detect: async () => ({ available: true, supported: true }),
+    discoverConversations: async ({ workspace }) => {
+      discoveryCalls += 1;
+      assert.equal(workspace.canonicalPath, directory);
+      return {
+        conversations: [{
+          providerConversationId: "http-provider-thread-123",
+          title: "HTTP discovered thread",
+          createdAt: "2026-09-20T00:00:00.000Z",
+          lastActiveAt: "2026-09-23T12:00:00.000Z",
+        }],
+        diagnostics: { status: "available", protocol: "test/list", pages: 1 },
+      };
+    },
+    attach: async (_context, providerSessionId) => ({ providerSessionId }),
+  });
+  const bridge = await createBridge({ config, registry });
+  await new Promise((resolve) => bridge.server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${bridge.server.address().port}`;
+  t.after(async () => {
+    bridge.server.closeAllConnections();
+    await new Promise((resolve) => bridge.server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+  const localLogin = await fetch(`${origin}/api/local-session`, { method: "POST", headers: { origin } });
+  const cookie = cookieFrom(localLogin);
+  const workspace = (await (await fetch(`${origin}/api/workspaces`, { headers: { cookie } })).json()).items[0];
+
+  const localOnly = await fetch(`${origin}/api/conversations?workspaceId=${workspace.id}&adapterId=discoverable`, { headers: { cookie } });
+  assert.equal(localOnly.status, 200);
+  assert.equal((await localOnly.json()).items.length, 0);
+  assert.equal(discoveryCalls, 0);
+
+  const refreshed = await fetch(`${origin}/api/conversations?workspaceId=${workspace.id}&adapterId=discoverable&refresh=1`, {
+    headers: { cookie, origin },
+  });
+  assert.equal(refreshed.status, 200);
+  const refreshedBody = await refreshed.json();
+  assert.equal(refreshedBody.discovery.created, 1);
+  assert.equal(refreshedBody.items.length, 1);
+  assert.equal(refreshedBody.items[0].title, "HTTP discovered thread");
+  assert.equal(refreshedBody.items[0].workspaceId, workspace.id);
+  assert.equal(discoveryCalls, 1);
+
+  const repeated = await fetch(`${origin}/api/conversations?workspaceId=${workspace.id}&adapterId=discoverable&refresh=1`, {
+    headers: { cookie, origin },
+  });
+  assert.equal((await repeated.json()).items[0].id, refreshedBody.items[0].id);
+  assert.equal(bridge.conversationCatalog.list().length, 1);
+});
+
 test("local phone launcher binds its cwd and QR to the created session", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-phone-"));
   const config = {
@@ -132,6 +313,17 @@ test("local phone launcher binds its cwd and QR to the created session", async (
     await new Promise((resolve) => bridge.server.close(resolve));
     await rm(directory, { recursive: true, force: true });
   });
+
+  const workspaceRegistration = await fetch(`${origin}/api/local/workspaces`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: directory }),
+  });
+  assert.equal(workspaceRegistration.status, 201);
+  const registeredWorkspace = (await workspaceRegistration.json()).workspace;
+  assert.match(registeredWorkspace.id, /^ws_/);
+  assert.equal("canonicalPath" in registeredWorkspace, false);
+  assert.equal(config.projects.get(registeredWorkspace.alias), directory);
 
   const launch = await fetch(`${origin}/api/local/phone`, {
     method: "POST",

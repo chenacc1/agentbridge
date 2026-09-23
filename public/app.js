@@ -1,5 +1,7 @@
 import { createCommandId } from "/command-id.js";
-import { renderMessageMarkdown } from "/markdown.js";
+import { absorbEvent, buildEntries, indexDeltas, trimEvents } from "/transcript.js";
+import { adapterCreationPresentation } from "/adapter-capabilities.js";
+import { discoverableAdapters, resolveWorkspaceNavigation, sessionsForWorkspace } from "/workspace-navigation.js";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -7,11 +9,32 @@ const model = {
   state: null,
   events: [],
   selectedId: null,
+  selectedWorkspaceId: null,
   lastSeq: 0,
   stream: null,
   bootstrap: null,
   stopConfirmUntil: 0,
+  sessionSignature: "",
+  workspaceSignature: "",
+  discoveryLoading: false,
+  discoveryMessage: "",
+  renderTimer: null,
+  deltaEvents: new Map(),
 };
+
+// The transcript is rebuilt at most this often instead of once per event. A
+// streamed turn can deliver hundreds of events per second; re-rendering for
+// each one is what made the phone stall while an answer was arriving.
+const RENDER_INTERVAL_MS = 80;
+const LOG_EMPTY_STATE = `<div class="empty-state"><div class="empty-rule"></div><h2>准备好了</h2><p>从下方发送第一条指令。真实 Agent 可能请求访问文件或运行命令。</p></div>`;
+
+function scheduleRender() {
+  if (model.renderTimer || !model.state) return;
+  model.renderTimer = setTimeout(() => {
+    model.renderTimer = null;
+    renderState();
+  }, RENDER_INTERVAL_MS);
+}
 
 function commandId() {
   return createCommandId();
@@ -187,6 +210,14 @@ function currentSession() {
   return model.state?.sessions.find((session) => session.id === model.selectedId) ?? null;
 }
 
+function currentWorkspace() {
+  return model.state?.workspaces?.find((workspace) => workspace.id === model.selectedWorkspaceId) ?? null;
+}
+
+function visibleSessions() {
+  return sessionsForWorkspace(model.state?.sessions ?? [], model.state?.workspaces ?? [], model.selectedWorkspaceId);
+}
+
 function statusLabel(status) {
   return ({ starting: "启动中", ready: "就绪", running: "执行中", failed: "失败", offline: "离线" })[status] ?? status;
 }
@@ -206,47 +237,93 @@ function eventStatusLabel(kind) {
 
 function renderState() {
   $("#machine-name").textContent = model.state.machine.name;
-  $("#session-count").textContent = `${model.state.sessions.length} 个任务`;
+  const navigation = resolveWorkspaceNavigation({
+    workspaces: model.state.workspaces,
+    sessions: model.state.sessions,
+    selectedWorkspaceId: model.selectedWorkspaceId,
+    selectedSessionId: model.selectedId,
+  });
+  model.selectedWorkspaceId = navigation.workspaceId;
+  model.selectedId = navigation.sessionId;
+  const workspace = currentWorkspace();
+  const sessions = visibleSessions();
+  $("#workspace-title").textContent = workspace?.name ?? "会话";
+  $("#session-count").textContent = `${sessions.length} 个任务`;
   const adapters = model.state.adapters;
   if (!$("#adapter-select").options.length) {
     $("#adapter-select").innerHTML = adapters.map((adapter) => {
-      const enabled = adapter.availability.available && adapter.availability.supported !== false;
-      const selectable = enabled || adapter.availability.native;
-      const suffix = enabled ? "" : adapter.availability.native ? "（原生入口）" : adapter.availability.available ? "（暂未接入）" : "（未安装）";
+      const { selectable, suffix } = adapterCreationPresentation(adapter);
       return `<option value="${escapeHtml(adapter.id)}" ${selectable ? "" : "disabled"}>${escapeHtml(adapter.label + suffix)}</option>`;
     }).join("");
   }
-  if (!$("#project-select").options.length) {
-    $("#project-select").innerHTML = model.state.projects.map((project) => `<option value="${escapeHtml(project)}">${escapeHtml(project)}</option>`).join("");
+  const projectOptions = model.state.workspaces.map((item) => `<option value="${escapeHtml(item.alias)}">${escapeHtml(item.name)}</option>`).join("");
+  if ($("#project-select").dataset.signature !== projectOptions) {
+    $("#project-select").innerHTML = projectOptions;
+    $("#project-select").dataset.signature = projectOptions;
   }
+  if (workspace) $("#project-select").value = workspace.alias;
   renderAdapterDetails();
 
-  // The list is rebuilt on every event; restore focus to the same row so
-  // keyboard and screen-reader users are not thrown back to the page top.
-  const focusedSessionId = document.activeElement?.closest?.("#session-list [data-session-id]")?.dataset.sessionId ?? null;
+  const workspaceSignature = `${model.selectedWorkspaceId}|${model.state.workspaces.map((item) => `${item.id}:${item.name}:${sessionsForWorkspace(model.state.sessions, model.state.workspaces, item.id).length}`).join("|")}`;
+  if (workspaceSignature !== model.workspaceSignature) {
+    model.workspaceSignature = workspaceSignature;
+    const focusedWorkspaceId = document.activeElement?.closest?.("#workspace-list [data-workspace-id]")?.dataset.workspaceId ?? null;
+    $("#workspace-list").innerHTML = model.state.workspaces.map((item) => {
+      const count = sessionsForWorkspace(model.state.sessions, model.state.workspaces, item.id).length;
+      return `<button class="workspace-row ${item.id === model.selectedWorkspaceId ? "active" : ""}" data-workspace-id="${escapeHtml(item.id)}" type="button" ${item.id === model.selectedWorkspaceId ? "aria-current=\"true\"" : ""}>
+        <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.alias)}</small></span><span class="workspace-count">${count}</span>
+      </button>`;
+    }).join("") || `<p class="form-note">尚未登记工作区。请先从电脑端添加项目。</p>`;
+    if (focusedWorkspaceId) $(`#workspace-list [data-workspace-id="${CSS.escape(focusedWorkspaceId)}"]`)?.focus();
+  }
 
-  $("#session-list").innerHTML = model.state.sessions.map((session) => `
+  const discoveryAdapters = discoverableAdapters(adapters);
+  const discoveryButton = $("#discover-conversations");
+  const discoveryAdapter = discoveryAdapters[0] ?? null;
+  discoveryButton.hidden = !workspace || !discoveryAdapter;
+  discoveryButton.disabled = model.discoveryLoading;
+  discoveryButton.dataset.adapterId = discoveryAdapter?.id ?? "";
+  discoveryButton.querySelector("span").textContent = model.discoveryLoading ? "同步中…" : "同步历史";
+  $("#discovery-note").textContent = model.discoveryMessage
+    || (discoveryAdapter
+      ? `从 ${discoveryAdapter.label} 读取此工作区的历史会话；只登记，不会启动对话。`
+      : "当前没有可公开同步历史的 Agent；仍可新建支持的会话。");
+
+  // The session list only changes when a session is added, retitled, or changes
+  // status, so it is left alone on the many events that only affect the log.
+  const signature = `${model.selectedWorkspaceId}|${model.selectedId}|${sessions
+    .map((session) => `${session.id}:${session.status}:${session.title}:${session.lastError ?? ""}`)
+    .join("|")}`;
+  if (signature !== model.sessionSignature) {
+    model.sessionSignature = signature;
+
+    // The list is rebuilt on change; restore focus to the same row so keyboard
+    // and screen-reader users are not thrown back to the page top.
+    const focusedSessionId = document.activeElement?.closest?.("#session-list [data-session-id]")?.dataset.sessionId ?? null;
+
+    $("#session-list").innerHTML = sessions.map((session) => `
     <button class="session-row ${session.id === model.selectedId ? "active" : ""}" data-session-id="${escapeHtml(session.id)}" type="button" ${session.id === model.selectedId ? 'aria-current="true"' : ""}>
       <span class="status-mark ${escapeHtml(session.status)}" aria-label="${escapeHtml(statusLabel(session.status))}"></span>
       <span><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(session.adapterId)} · ${escapeHtml(session.projectAlias)} · ${escapeHtml(statusLabel(session.status))}</small></span>
-    </button>`).join("") || `<p class="form-note">还没有会话。点击加号创建第一个任务。</p>`;
+    </button>`).join("") || `<p class="form-note">这个工作区还没有会话。可同步历史，或点击加号新建。</p>`;
 
-  if (focusedSessionId) {
-    $(`#session-list [data-session-id="${CSS.escape(focusedSessionId)}"]`)?.focus();
+    if (focusedSessionId) {
+      $(`#session-list [data-session-id="${CSS.escape(focusedSessionId)}"]`)?.focus();
+    }
   }
 
-  if (!model.selectedId && model.state.sessions[0]) model.selectedId = model.state.sessions[0].id;
   renderSession();
 }
 
 function renderAdapterDetails() {
   const adapter = model.state?.adapters.find((item) => item.id === $("#adapter-select").value);
   const availability = adapter?.availability;
+  const creation = adapterCreationPresentation(adapter);
   $("#adapter-note").textContent = availability?.note ?? "手机只能选择电脑端允许的项目。";
   const help = $("#adapter-help");
   help.hidden = !availability?.docsUrl;
   help.href = availability?.docsUrl ?? "#";
-  $("#new-session-form button[type=submit]").disabled = availability?.supported === false || !availability?.available;
+  $("#new-session-form button[type=submit]").disabled = !creation.enabled;
 }
 
 function selectedSessionModel() {
@@ -300,7 +377,14 @@ function renderSession() {
   const session = currentSession();
   $("#empty-state").hidden = Boolean(session);
   $("#session-view").hidden = !session;
-  if (!session) return;
+  if (!session) {
+    const workspace = currentWorkspace();
+    $("#empty-title").textContent = workspace ? `${workspace.name} 还没有会话` : "先选择一个工作区";
+    $("#empty-description").textContent = workspace
+      ? "点击“同步历史”读取可恢复会话，或点击加号在此工作区新建会话。"
+      : "工作区只能从电脑端登记，手机不会接收任意本地路径。";
+    return;
+  }
 
   $("#session-title-heading").textContent = session.title;
   $("#session-adapter").textContent = session.adapterId;
@@ -327,59 +411,53 @@ function renderSession() {
   renderEvents();
 }
 
+let renderedEntries = [];
+
+// Entries are append-only except for the reply that is still streaming, so the
+// DOM is diffed by key: unchanged entries are never touched, and only the
+// growing reply is rewritten. Rebuilding all of innerHTML per event was the
+// main reason a long conversation felt frozen on a phone.
+function applyEntries(log, entries) {
+  if (!entries.length) {
+    if (log.childElementCount === 0 || renderedEntries.length) log.innerHTML = LOG_EMPTY_STATE;
+    renderedEntries = [];
+    return;
+  }
+
+  let common = 0;
+  while (common < renderedEntries.length && common < entries.length && renderedEntries[common].key === entries[common].key) common += 1;
+
+  if (common === entries.length && common === renderedEntries.length && common > 0) {
+    const node = log.children[common - 1];
+    if (node && node.lastEntryHtml !== entries[common - 1].html) {
+      node.lastEntryHtml = entries[common - 1].html;
+      node.innerHTML = entries[common - 1].html;
+    }
+    renderedEntries = entries;
+    return;
+  }
+
+  const children = [...log.children];
+  for (let index = common; index < children.length; index += 1) children[index].remove();
+  const fragment = document.createDocumentFragment();
+  for (let index = common; index < entries.length; index += 1) {
+    const node = document.createElement("article");
+    node.className = `event-entry ${entries[index].className}`.trim();
+    node.dataset.entryKey = entries[index].key;
+    node.lastEntryHtml = entries[index].html;
+    node.innerHTML = entries[index].html;
+    fragment.append(node);
+  }
+  log.append(fragment);
+  renderedEntries = entries;
+}
+
 function renderEvents() {
   const log = $("#event-log");
   const followsTail = !log.childElementCount || log.scrollHeight - log.scrollTop - log.clientHeight < 80;
   const relevant = model.events.filter((event) => event.sessionId === model.selectedId);
-
-  // Single pass: collect delta text per turn and completion state up front so
-  // rendering stays O(n) even at the 1500-event cap on a phone.
-  const deltaTextByTurn = new Map();
-  const completedTurns = new Set();
-  for (const event of relevant) {
-    if (event.kind === "message.delta") {
-      deltaTextByTurn.set(event.turnId, (deltaTextByTurn.get(event.turnId) ?? "") + String(event.payload.text ?? ""));
-    } else if (event.kind === "message.completed" && event.payload.role === "assistant") {
-      completedTurns.add(event.turnId);
-    }
-  }
-
-  const renderedDeltas = new Set();
-  const entries = [];
-  for (const event of relevant) {
-    if (event.kind === "message.delta") {
-      if (completedTurns.has(event.turnId) || renderedDeltas.has(event.turnId)) continue;
-      renderedDeltas.add(event.turnId);
-      entries.push(entryHtml(event, "Agent 正在回复", deltaTextByTurn.get(event.turnId) ?? "", "assistant", true));
-    } else if (event.kind === "message.completed") {
-      entries.push(entryHtml(event, event.payload.role === "user" ? "你" : "Agent", event.payload.text, event.payload.role, true));
-    } else if (event.kind === "tool.started" || event.kind === "tool.completed") {
-      const label = event.kind.endsWith("started") ? "工具开始" : "工具完成";
-      const detail = event.payload.command ? String(event.payload.command) : `${event.payload.type ?? "tool"}${event.payload.status ? ` · ${event.payload.status}` : ""}`;
-      entries.push(entryHtml(event, label, detail, "tool"));
-    } else if (event.kind === "approval.requested") {
-      entries.push(approvalHtml(event));
-    } else if (event.kind === "turn.failed" || event.kind === "session.failed" || event.kind === "adapter.exited") {
-      entries.push(entryHtml(event, "执行异常", event.payload.error ?? event.payload.stderr ?? event.kind, "error"));
-    } else if (["session.created", "session.ready", "turn.started", "turn.completed", "turn.cancelled", "control.granted", "turn.stop_requested", "model.changed"].includes(event.kind)) {
-      entries.push(entryHtml(event, "状态", eventStatusLabel(event.kind), "tool"));
-    }
-  }
-  log.innerHTML = entries.join("") || `<div class="empty-state"><div class="empty-rule"></div><h2>准备好了</h2><p>从下方发送第一条指令。真实 Agent 可能请求访问文件或运行命令。</p></div>`;
+  applyEntries(log, buildEntries(relevant, { statusLabel: eventStatusLabel }));
   if (followsTail) log.scrollTop = log.scrollHeight;
-}
-
-function entryHtml(event, label, text, className = "", supportsMarkdown = false) {
-  const time = new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const content = supportsMarkdown
-    ? renderMessageMarkdown(text)
-    : `<p>${escapeHtml(String(text ?? ""))}</p>`;
-  return `<article class="event-entry ${className}"><time class="event-time">${time}</time><div class="event-body"><strong>${escapeHtml(label)}</strong><div class="message-markdown">${content}</div></div></article>`;
-}
-
-function approvalHtml(event) {
-  const request = JSON.stringify(event.payload.request ?? {}, null, 2).slice(0, 1600);
-  return `<article class="event-entry"><time class="event-time">${new Date(event.time).toLocaleTimeString()}</time><div class="event-body approval-entry"><strong>需要你的批准</strong><p>${escapeHtml(event.payload.method)}\n${escapeHtml(request)}</p><div class="approval-actions"><button class="approve" data-approval="${event.payload.approvalId}" data-decision="approve" type="button">仅本次批准</button><button class="deny" data-approval="${event.payload.approvalId}" data-decision="deny" type="button">拒绝</button></div></div></article>`;
 }
 
 function escapeHtml(value) {
@@ -394,7 +472,11 @@ async function refreshState() {
 function connectEvents() {
   model.stream?.close();
   setConnection("", "正在连接");
-  const stream = new EventSource(`/api/events?after=${model.lastSeq}`);
+  // No explicit `after` cursor: the browser resends the last event id it saw, so
+  // an automatic reconnect resumes from where it stopped. Pinning `after=0` in
+  // the URL made every reconnect replay the whole buffered history, which is why
+  // the transcript used to crawl back in over the tunnel.
+  const stream = new EventSource("/api/events");
   model.stream = stream;
   stream.addEventListener("open", () => setConnection("online", "实时同步"));
   stream.addEventListener("error", () => setConnection("offline", "正在重连"));
@@ -402,18 +484,18 @@ function connectEvents() {
     const event = JSON.parse(message.data);
     if (event.seq <= model.lastSeq) return;
     model.lastSeq = event.seq;
-    model.events.push(event);
+    absorbEvent(model.events, model.deltaEvents, event);
     // Announce only completed messages and recognized status changes; deltas
     // and tool chatter would spam the polite live region on every token.
     if (event.kind === "message.completed") {
       $("#event-announcer").textContent = `${event.payload.role === "user" ? "你" : "Agent"}：${String(event.payload.text ?? "").slice(0, 180)}`;
     } else if (event.kind === "approval.requested") {
       $("#event-announcer").textContent = "收到一条需要批准的请求";
-    } else {
+    } else if (event.kind !== "message.delta") {
       const label = eventStatusLabel(event.kind);
       if (label !== event.kind) $("#event-announcer").textContent = label;
     }
-    if (model.events.length > 1500) model.events.shift();
+    trimEvents(model.events, model.deltaEvents);
     const session = model.state.sessions.find((item) => item.id === event.sessionId);
     if (session) {
       if (event.kind === "turn.started") session.status = "running";
@@ -422,8 +504,8 @@ function connectEvents() {
       if (event.kind === "control.granted") session.controller = event.payload.controller;
       if (event.kind === "model.changed" && session.modelDirectory) session.modelDirectory.current = event.payload.selected;
     }
-    if (event.kind.startsWith("session.")) void refreshState().catch((error) => toast(error.message));
-    else { renderState(); }
+    if (event.kind.startsWith("session.") || event.kind === "conversation.discovered") void refreshState().catch((error) => toast(error.message));
+    else scheduleRender();
   });
 }
 
@@ -437,12 +519,56 @@ $("#new-session-toggle").addEventListener("click", () => {
 $("#adapter-select").addEventListener("change", () => {
   renderAdapterDetails();
 });
+$("#workspace-list").addEventListener("click", (event) => {
+  const row = event.target.closest("[data-workspace-id]");
+  if (!row) return;
+  model.selectedWorkspaceId = row.dataset.workspaceId;
+  model.selectedId = null;
+  model.discoveryMessage = "";
+  renderedEntries = [];
+  model.workspaceSignature = "";
+  model.sessionSignature = "";
+  renderState();
+});
 $("#session-list").addEventListener("click", (event) => {
   const row = event.target.closest("[data-session-id]");
   if (!row) return;
   model.selectedId = row.dataset.sessionId;
   renderState();
   void rememberSession().catch((error) => toast(error.message));
+});
+
+$("#project-select").addEventListener("change", (event) => {
+  const workspace = model.state.workspaces.find((item) => item.alias === event.target.value);
+  if (!workspace) return;
+  model.selectedWorkspaceId = workspace.id;
+  model.selectedId = null;
+  model.workspaceSignature = "";
+  model.sessionSignature = "";
+  renderState();
+});
+
+$("#discover-conversations").addEventListener("click", async () => {
+  const workspace = currentWorkspace();
+  const adapterId = $("#discover-conversations").dataset.adapterId;
+  if (!workspace || !adapterId || model.discoveryLoading) return;
+  model.discoveryLoading = true;
+  model.discoveryMessage = "正在读取公开会话列表…";
+  renderState();
+  try {
+    const result = await api(`/api/conversations?workspaceId=${encodeURIComponent(workspace.id)}&adapterId=${encodeURIComponent(adapterId)}&refresh=1`);
+    model.discoveryMessage = result.discovery.created || result.discovery.updated
+      ? `同步完成：新增 ${result.discovery.created} 个，更新 ${result.discovery.updated} 个会话。`
+      : "已是最新，没有发现新的会话。";
+    model.selectedId = null;
+    await refreshState();
+  } catch (error) {
+    model.discoveryMessage = `同步失败：${error.message}`;
+    toast(error.message);
+  } finally {
+    model.discoveryLoading = false;
+    renderState();
+  }
 });
 
 $("#new-session-form").addEventListener("submit", async (event) => {
@@ -479,7 +605,7 @@ $("#composer").addEventListener("submit", async (event) => {
 
 $("#message-input").addEventListener("input", (event) => {
   event.target.style.height = "auto";
-  event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
+  event.target.style.height = `${Math.min(event.target.scrollHeight, 320)}px`;
 });
 
 $("#take-control").addEventListener("click", async () => {
@@ -607,6 +733,10 @@ async function init() {
   }
   model.lastSeq = 0;
   model.events = [];
+  indexDeltas(model.events, model.deltaEvents);
+  renderedEntries = [];
+  model.sessionSignature = "";
+  model.workspaceSignature = "";
   await loadBootstrap();
   renderReturnEntry();
   $("#pairing-screen").hidden = true;

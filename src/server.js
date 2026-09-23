@@ -1,7 +1,7 @@
 import http from "node:http";
 import path from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import QRCode from "qrcode";
 import { loadConfig, isLoopback } from "./config.js";
@@ -16,6 +16,8 @@ import { DeepSeekHarnessAdapter } from "./adapters/deepseek-harness.js";
 import { DshDesktopAdapter } from "./adapters/dsh-desktop.js";
 import { ZCodeNativeAdapter } from "./adapters/zcode-native.js";
 import { DshDesktopChannelManager } from "./dsh-desktop-channels.js";
+import { WorkspaceCatalog } from "./workspaces/workspace-catalog.js";
+import { ConversationCatalog } from "./conversations/conversation-catalog.js";
 
 const sourceDir = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(sourceDir, "../public");
@@ -31,7 +33,10 @@ function json(res, statusCode, value, headers = {}) {
 
 function errorResponse(res, error) {
   const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
-  json(res, statusCode, { error: statusCode === 500 ? "Internal server error" : error.message });
+  const payload = { error: statusCode === 500 ? "Internal server error" : error.message };
+  if (statusCode !== 500 && typeof error.code === "string") payload.code = error.code;
+  if (statusCode !== 500 && error.diagnostics && typeof error.diagnostics === "object") payload.diagnostics = error.diagnostics;
+  json(res, statusCode, payload);
 }
 
 function parseCookies(header = "") {
@@ -111,27 +116,15 @@ function requireAccessKey(req, url, config) {
   }
 }
 
-async function registerLocalProject(projects, requestedPath) {
-  if (typeof requestedPath !== "string" || !path.isAbsolute(requestedPath)) {
-    throw Object.assign(new Error("cwd must be an absolute local path"), { statusCode: 400 });
-  }
-  let cwd;
-  try {
-    cwd = await realpath(requestedPath);
-    if (!(await stat(cwd)).isDirectory()) throw new Error("not a directory");
-  } catch {
-    throw Object.assign(new Error("cwd must be an existing directory"), { statusCode: 400 });
-  }
-  const comparable = process.platform === "win32" ? cwd.toLowerCase() : cwd;
-  for (const [alias, projectPath] of projects) {
-    const existing = process.platform === "win32" ? projectPath.toLowerCase() : projectPath;
-    if (existing === comparable) return { alias, cwd };
-  }
-  const slug = path.basename(cwd).replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 22) || "project";
-  const suffix = createHash("sha256").update(cwd).digest("hex").slice(0, 8);
-  const alias = `local-${slug}-${suffix}`.slice(0, 40);
-  projects.set(alias, cwd);
-  return { alias, cwd };
+async function registerLocalProject(workspaceCatalog, projects, requestedPath) {
+  const workspace = await workspaceCatalog.register({ requestedPath, source: "local" });
+  projects.set(workspace.alias, workspace.canonicalPath);
+  return {
+    id: workspace.id,
+    alias: workspace.alias,
+    name: workspace.name,
+    cwd: workspace.canonicalPath,
+  };
 }
 
 async function serveStatic(res, pathname) {
@@ -139,7 +132,10 @@ async function serveStatic(res, pathname) {
     "/": ["index.html", "text/html; charset=utf-8"],
     "/pair": ["index.html", "text/html; charset=utf-8"],
     "/app.js": ["app.js", "text/javascript; charset=utf-8"],
+    "/adapter-capabilities.js": ["adapter-capabilities.js", "text/javascript; charset=utf-8"],
+    "/workspace-navigation.js": ["workspace-navigation.js", "text/javascript; charset=utf-8"],
     "/markdown.js": ["markdown.js", "text/javascript; charset=utf-8"],
+    "/transcript.js": ["transcript.js", "text/javascript; charset=utf-8"],
     "/command-id.js": ["command-id.js", "text/javascript; charset=utf-8"],
     "/styles.css": ["styles.css", "text/css; charset=utf-8"],
   };
@@ -159,8 +155,20 @@ async function serveStatic(res, pathname) {
 
 export async function createBridge(options = {}) {
   const config = options.config ?? loadConfig();
+  const workspaceCatalog = options.workspaceCatalog ?? new WorkspaceCatalog({
+    filePath: path.join(config.dataDir, "workspaces.json"),
+    initialProjects: config.projects,
+  });
+  await workspaceCatalog.init();
+  for (const workspace of workspaceCatalog.list()) {
+    if (workspace.enabled) config.projects.set(workspace.alias, workspace.canonicalPath);
+  }
   const eventStore = options.eventStore ?? new EventStore({ filePath: path.join(config.dataDir, "events.jsonl") });
   await eventStore.init();
+  const conversationCatalog = options.conversationCatalog ?? new ConversationCatalog({
+    filePath: path.join(config.dataDir, "bridge-sessions.json"),
+  });
+  await conversationCatalog.init();
   const pairing = options.pairing ?? new PairingManager({
     ...config,
     storePath: config.dataDir ? path.join(config.dataDir, "sessions.json") : null,
@@ -175,7 +183,13 @@ export async function createBridge(options = {}) {
     registry.register(new DshDesktopAdapter({ channels: dshDesktopChannels }));
     registry.register(new ZCodeNativeAdapter());
   }
-  const sessions = options.sessions ?? new SessionManager({ eventStore, registry, projects: config.projects });
+  const sessions = options.sessions ?? new SessionManager({
+    eventStore,
+    registry,
+    projects: config.projects,
+    conversationCatalog,
+    workspaceCatalog,
+  });
   let currentPairing = pairing.createPairing(config.advertisedOrigin);
   const dshQrTargets = new Map();
 
@@ -257,15 +271,27 @@ export async function createBridge(options = {}) {
         requireSameOrigin(req);
         const local = pairing.createSession("Desktop browser");
         return json(res, 201, { device: { id: local.id, deviceName: local.deviceName, expiresAt: local.expiresAt } }, {
-          "set-cookie": sessionCookie(local.token, config.secureCookies, config.sessionTtlMs),
+          // The desktop dashboard is intentionally opened over loopback HTTP,
+          // even when the advertised phone origin is HTTPS (Cloudflare mode).
+          // A Secure cookie would be discarded by the local browser.
+          "set-cookie": sessionCookie(local.token, false, config.sessionTtlMs),
         });
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/local/workspaces") {
+        if (!isLoopback(req.socket.remoteAddress)) throw Object.assign(new Error("Local access only"), { statusCode: 403 });
+        requireSameOrigin(req);
+        const body = await readJson(req);
+        const project = await registerLocalProject(workspaceCatalog, config.projects, body.path);
+        const workspace = workspaceCatalog.listPublic().find((item) => item.id === project.id);
+        return json(res, 201, { workspace });
       }
 
       if (req.method === "POST" && url.pathname === "/api/local/phone") {
         if (!isLoopback(req.socket.remoteAddress)) throw Object.assign(new Error("Local access only"), { statusCode: 403 });
         requireSameOrigin(req);
         const body = await readJson(req);
-        const project = await registerLocalProject(config.projects, body.cwd);
+        const project = await registerLocalProject(workspaceCatalog, config.projects, body.cwd);
         const device = pairing.createSession("Local launcher");
         const sessionInput = {
           adapterId: String(body.adapterId || "claude"),
@@ -293,7 +319,7 @@ export async function createBridge(options = {}) {
         if (providerSessionId.length < 8 || providerSessionId.length > 200) {
           throw Object.assign(new Error("A valid DSH session id is required"), { statusCode: 400 });
         }
-        const project = await registerLocalProject(config.projects, body.cwd);
+        const project = await registerLocalProject(workspaceCatalog, config.projects, body.cwd);
         const title = String(body.title || `${path.basename(project.cwd)} · DSH Desktop`).slice(0, 100);
         const registration = dshDesktopChannels.register({
           providerSessionId,
@@ -382,11 +408,42 @@ export async function createBridge(options = {}) {
         return json(res, 200, { devices: pairing.listDevices(), currentDeviceId: device.id });
       }
 
+      if (req.method === "GET" && url.pathname === "/api/workspaces") {
+        return json(res, 200, {
+          revision: workspaceCatalog.revision,
+          items: workspaceCatalog.listPublic(),
+        });
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/conversations") {
+        const workspaceId = String(url.searchParams.get("workspaceId") ?? "");
+        const adapterId = String(url.searchParams.get("adapterId") ?? "");
+        const workspace = workspaceCatalog.get(workspaceId);
+        if (!workspace || !workspace.enabled) throw Object.assign(new Error("Workspace not found"), { statusCode: 404 });
+        const refresh = url.searchParams.get("refresh") === "1";
+        let discovery = null;
+        if (refresh) {
+          requireSameOrigin(req);
+          if (!adapterId) throw Object.assign(new Error("adapterId is required for provider discovery"), { statusCode: 400 });
+          discovery = await sessions.discover({ workspaceId: workspace.id, adapterId });
+        }
+        return json(res, 200, {
+          revision: conversationCatalog.revision,
+          items: sessions.list({ workspaceId: workspace.id, adapterId: adapterId || null }),
+          ...(discovery ? { discovery: {
+            created: discovery.created,
+            updated: discovery.updated,
+            diagnostics: discovery.diagnostics,
+          } } : {}),
+        });
+      }
+
       if (req.method === "GET" && url.pathname === "/api/state") {
         return json(res, 200, {
           machine: { id: "local", name: config.machineName },
           device,
-          projects: [...config.projects.keys()],
+          projects: workspaceCatalog.listPublic().map((workspace) => workspace.alias),
+          workspaces: workspaceCatalog.listPublic(),
           adapters: await registry.describe(),
           sessions: sessions.list(),
           lastSeq: eventStore.lastSeq,
@@ -430,7 +487,7 @@ export async function createBridge(options = {}) {
         const targetId = decodeURIComponent(match[1]);
         if (!pairing.revoke(targetId)) throw Object.assign(new Error("Device not found"), { statusCode: 404 });
         const headers = targetId === device.id
-          ? { "set-cookie": `agentbridge_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${config.secureCookies ? "; Secure" : ""}` }
+          ? { "set-cookie": `agentbridge_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${config.secureCookies && !isLoopback(req.socket.remoteAddress) ? "; Secure" : ""}` }
           : {};
         return json(res, 200, { revoked: true }, headers);
       }
@@ -467,7 +524,18 @@ export async function createBridge(options = {}) {
     }
   });
 
-  return { server, config, eventStore, pairing, registry, sessions, dshDesktopChannels, getCurrentPairing: () => currentPairing };
+  return {
+    server,
+    config,
+    eventStore,
+    pairing,
+    registry,
+    sessions,
+    dshDesktopChannels,
+    workspaceCatalog,
+    conversationCatalog,
+    getCurrentPairing: () => currentPairing,
+  };
 }
 
 export async function startBridge() {

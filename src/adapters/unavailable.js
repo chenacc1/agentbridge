@@ -7,10 +7,14 @@ export class UnavailableAdapter {
     this.command = command;
     this.note = note;
     this.capabilities = {
+      create: false,
+      attach: false,
+      discover: false,
       streaming: false,
-      approvals: false,
+      approve: false,
       resume: false,
       cancel: false,
+      selectModel: false,
       realAgent: true,
     };
   }
@@ -24,4 +28,3 @@ export class UnavailableAdapter {
     throw Object.assign(new Error(`${this.label} adapter is not implemented in this MVP`), { statusCode: 501 });
   }
 }
-

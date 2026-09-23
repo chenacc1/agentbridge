@@ -1,5 +1,8 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
+// Applied sequence numbers are remembered so replaying a batch is a no-op.
+const MAX_APPLIED_SEQ = 20_000;
+
 function httpError(message, statusCode) {
   return Object.assign(new Error(message), { statusCode });
 }
@@ -63,6 +66,8 @@ export class DshDesktopChannelManager {
         commands: [],
         nextCommandSeq: 0,
         lastDshEventSeq: 0,
+        appliedSeq: new Set(),
+        ingestChain: Promise.resolve(),
         bridge: null,
       };
       this.#byProvider.set(providerSessionId, state);
@@ -88,6 +93,8 @@ export class DshDesktopChannelManager {
     state.registeredAt = Date.now();
     state.lastSeenAt = Date.now();
     state.closed = false;
+    if (!state.appliedSeq) state.appliedSeq = new Set();
+    if (!state.ingestChain) state.ingestChain = Promise.resolve();
     this.#byChannel.set(state.channelId, state);
 
     return {
@@ -206,17 +213,40 @@ export class DshDesktopChannelManager {
     }
     if (!state.bridge?.onEvent) throw httpError("Bridge session is not ready", 409);
     state.lastSeenAt = Date.now();
+    // Batches are applied strictly one at a time. Concurrent flushes from the
+    // desktop companion used to interleave, which reordered a turn's streamed
+    // text and let each batch's cursor mark another batch's events as seen.
+    const run = state.ingestChain.catch(() => undefined).then(() => this.#applyRecords(state, records));
+    state.ingestChain = run;
+    return run;
+  }
 
-    let accepted = 0;
+  async #applyRecords(state, records) {
+    const pending = [];
     for (const record of records) {
       const event = record?.event;
-      if (!event || !Number.isSafeInteger(event.seq) || event.seq <= state.lastDshEventSeq) continue;
+      if (!event || !Number.isSafeInteger(event.seq)) continue;
       if (typeof event.type !== "string" || typeof event.time !== "number" || !event.data) {
         throw httpError("Invalid DSH session event", 400);
       }
-      await state.bridge.onEvent({ event, origin: record.origin === "phone" ? "phone" : "desktop" }, state);
-      state.lastDshEventSeq = event.seq;
+      // Dedupe by the exact sequence numbers already applied rather than by a
+      // high-water mark, so a batch that arrives late or is retried after a
+      // newer one is still accepted instead of being silently discarded.
+      if (state.appliedSeq.has(event.seq)) continue;
+      pending.push({ event, origin: record.origin === "phone" ? "phone" : "desktop" });
+    }
+    pending.sort((a, b) => a.event.seq - b.event.seq);
+
+    let accepted = 0;
+    for (const record of pending) {
+      await state.bridge.onEvent(record, state);
+      state.appliedSeq.add(record.event.seq);
+      state.lastDshEventSeq = Math.max(state.lastDshEventSeq, record.event.seq);
       accepted += 1;
+    }
+    if (state.appliedSeq.size > MAX_APPLIED_SEQ) {
+      const cutoff = state.lastDshEventSeq - Math.floor(MAX_APPLIED_SEQ / 2);
+      for (const seq of state.appliedSeq) if (seq < cutoff) state.appliedSeq.delete(seq);
     }
     return { accepted, lastEventSeq: state.lastDshEventSeq };
   }

@@ -23,6 +23,14 @@ function registration(channels) {
   });
 }
 
+test("DSH Desktop declares an attach-only conversation interface", async () => {
+  const adapter = new DshDesktopAdapter({ channels: new DshDesktopChannelManager() });
+
+  assert.equal(adapter.capabilities.create, false);
+  assert.equal(adapter.capabilities.attach, true);
+  assert.equal(adapter.capabilities.discover, false);
+});
+
 test("DSH Desktop channel authenticates, queues phone commands, and rotates credentials", async () => {
   const channels = new DshDesktopChannelManager();
   const first = registration(channels);
@@ -131,4 +139,83 @@ test("DSH Desktop keeps a host model catalog when the current UI model is unavai
     selected: { provider: "deepseek-official", model: "deepseek-v4-pro" },
   });
   assert.deepEqual(await pending, { selected: { provider: "deepseek-official", model: "deepseek-v4-pro" } });
+});
+
+// The desktop companion can have several flushes in flight while a turn streams.
+// Overlapping batches used to interleave, which reordered a turn's streamed text
+// and let one batch's high-water mark discard another batch's events entirely.
+test("concurrent DSH Desktop batches keep every event and preserve their order", async () => {
+  const channels = new DshDesktopChannelManager();
+  const channel = registration(channels);
+  const adapter = new DshDesktopAdapter({ channels });
+  const applied = [];
+  await adapter.attach({
+    emit: async (kind, payload, extra) => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      applied.push({ kind, text: payload?.text, turnId: extra?.turnId });
+    },
+  }, channel.providerSessionId);
+
+  const batch = (from, to) => {
+    const events = [];
+    for (let seq = from; seq <= to; seq += 1) {
+      events.push({
+        event: {
+          type: "assistant/chunk",
+          seq,
+          time: seq,
+          data: { turn: 7, step: 1, chunk: { type: "text-delta", index: 0, text: `w${seq} ` } },
+        },
+        origin: "desktop",
+      });
+    }
+    return { events };
+  };
+
+  const batches = [batch(1, 60), batch(61, 120), batch(121, 180), batch(181, 240)];
+  const responses = await Promise.all(batches.map(({ events }) => channels.ingest(channel.id, channel.token, events)));
+
+  assert.deepEqual(responses.map((response) => response.accepted), [60, 60, 60, 60]);
+  assert.equal(applied.length, 240, "some events were dropped by a concurrent batch");
+  assert.deepEqual(
+    applied.map((event) => event.text.trim()),
+    Array.from({ length: 240 }, (_value, index) => `w${index + 1}`),
+    "streamed text arrived out of order",
+  );
+  assert.equal(new Set(applied.map((event) => event.turnId)).size, 1);
+});
+
+test("a batch that arrives after a newer one is still accepted exactly once", async () => {
+  const channels = new DshDesktopChannelManager();
+  const channel = registration(channels);
+  const adapter = new DshDesktopAdapter({ channels });
+  const applied = [];
+  await adapter.attach({
+    emit: async (kind, payload) => applied.push({ kind, text: payload?.text }),
+  }, channel.providerSessionId);
+
+  const records = (from, to) => Array.from({ length: to - from + 1 }, (_value, index) => ({
+    event: {
+      type: "assistant/chunk",
+      seq: from + index,
+      time: from + index,
+      data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: `w${from + index} ` } },
+    },
+    origin: "desktop",
+  }));
+
+  // A retried older batch arrives after a newer one has already been applied.
+  await channels.ingest(channel.id, channel.token, records(11, 20));
+  const retried = await channels.ingest(channel.id, channel.token, records(1, 10));
+  assert.equal(retried.accepted, 10, "a late batch was discarded by the high-water mark");
+
+  const replayed = await channels.ingest(channel.id, channel.token, records(1, 20));
+  assert.equal(replayed.accepted, 0, "replaying an applied batch must be a no-op");
+
+  // Acceptance is what matters here: the companion holds newer batches back
+  // until a failed one has been retried, so no event may be lost or doubled.
+  const texts = applied.map((event) => event.text.trim());
+  assert.equal(texts.length, 20);
+  assert.deepEqual([...texts].sort(), Array.from({ length: 20 }, (_value, index) => `w${index + 1}`).sort());
+  assert.equal(new Set(texts).size, 20, "an event was applied twice");
 });

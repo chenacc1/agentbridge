@@ -32,11 +32,11 @@ One normalized, capability-aware event stream and control lease spans multiple v
 
 ## Capabilities and Constraints
 
-- MVP agents: built-in Echo test adapter, real Codex App Server adapter, and real Claude stream-json adapter.
-- DeepSeek Harness and ZCode are capability placeholders until supported local integrations are installed and implemented.
+- Agent paths: built-in Echo test adapter, real Codex App Server adapter, real Claude stream-json adapter, DeepSeek Harness ACP, and the DSH Desktop exact-conversation companion.
+- ZCode is an explicit native-remote handoff because it does not publish a local session API that AgentBridge can safely attach to.
 - Real-time downlink uses SSE; state-changing commands use idempotent HTTP POST.
 - Pairing codes are short-lived and one-time. Session credentials use HttpOnly same-site cookies.
-- The MVP does not automate a personal WeChat desktop client and does not include production WeChat Official Account credentials or a cloud Relay.
+- The product does not automate a personal WeChat desktop client and does not include production WeChat Official Account credentials or a cloud Relay. LAN, Tailscale, and ZeroTier are private-network transports; Cloudflare Tunnel is an HTTPS transport protected by an additional AgentBridge access key.
 - Conversation state is synchronized semantically; arbitrary unmodified vendor GUIs are not pixel-mirrored.
 
 ## Evidence on Hand
@@ -56,4 +56,3 @@ One normalized, capability-aware event stream and control lease spans multiple v
 ## Accessibility & Inclusion
 
 The mobile control surface must support keyboard navigation, visible focus, reduced motion, 44px minimum touch targets, readable Chinese copy, and status communication that does not rely on color alone.
-
