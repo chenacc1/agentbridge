@@ -105,9 +105,13 @@ node .\bin\agentbridge.js phone --agent deepseek-harness
 
 ## 界面
 
-![桌面控制台（公开截图中已移除配对区与设备管理区）](./docs/assets/ui-desktop.png)
+![桌面端控制台](./docs/assets/screen-desktop-console.jpg)
 
-<p align="center"><img src="./docs/assets/ui-mobile.png" alt="手机控制台" width="360" /></p>
+手机端把同一份事件流重新排进窄屏：
+
+| 手机端 ① | 手机端 ② |
+|---|---|
+| <img src="./docs/assets/screen-mobile-1.png" alt="手机端控制台 1" width="300" /> | <img src="./docs/assets/screen-mobile-2.png" alt="手机端控制台 2" width="300" /> |
 
 ## 常用配置
 
