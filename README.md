@@ -6,6 +6,18 @@
 
 手机与桌面共享同一份可追加事件流，因此消息、工具活动、审批和任务状态始终同步。电脑是唯一的执行端：手机只下发命令，不运行 Agent，也拿不到任何供应商凭据。
 
+## 它是怎么工作的
+
+![三端结构：手机控制面、本地 Bridge、电脑执行端](./docs/assets/keyframe-02-three-tier.jpg)
+
+1. **手机** 只负责界面与指令：扫码进入 H5 控制台，选工作区、选会话，发出消息、审批与停止命令。
+2. **本地 Bridge** 是唯一枢纽：校验设备、维持会话与输入租约，把命令写进可追加事件流，再经 SSE 推回手机。
+3. **电脑上的 Agent 子进程** 真正执行任务，凭据与文件访问始终留在本机，手机侧拿不到。
+
+因为上行与下行共用同一条事件流，桌面端和手机看到的是同一份状态，而不是两套各自猜测的界面。
+
+> 本文中标注为「分镜关键帧」的图片是讲解视频的概念示意图，用于说明结构关系；真实界面见下文「界面」一节。
+
 ## 主要能力
 
 - **扫码配对**：一次性、5 分钟有效的二维码；配对后收藏固定回访地址，之后免扫码进入。
@@ -54,7 +66,7 @@ npm start
 | Tailscale 不稳定 | ZeroTier | 同一私有网络 |
 | 手机装不了 VPN 类 App | Cloudflare Tunnel | 只需浏览器 |
 
-![访问边界：本地配对与管理接口只允许 loopback；远程访问使用私有网络或受访问密钥保护的隧道。](./docs/assets/security-boundaries.svg)
+![分镜关键帧：四条网络路径分别接入同一台 Windows Host，其中 Cloudflare 路径还要经过一道访问密钥门禁](./docs/assets/keyframe-09-network-paths.jpg)
 
 任何模式都不要把 TCP 8787 直接映射到公网。Cloudflare 模式额外启用访问密钥闸门（密钥存于 `.agentbridge/access-key`），光有二维码不够。
 
@@ -87,6 +99,10 @@ node .\bin\agentbridge.js phone --agent deepseek-harness
 | DSH Desktop | 安装本地 bundle 后可用 | 绑定屏幕上的会话，可双向同步、切换模型、新建会话 |
 | ZCode | 官方原生交接 | 走 ZCode Desktop 的 Remote Control / Bot Channel，本身不伪造会话接口 |
 
+![分镜关键帧：多 Agent 适配层——统一控制台环绕四类可接入 Agent，ZCode 位于外圈并标为官方原生入口](./docs/assets/keyframe-06-agent-adapters.jpg)
+
+每个适配器只承诺它真实支持的能力：缺哪项能力，界面就显示「未安装」或「仅桌面附着」，而不是摆一个按不动的按钮。
+
 ## 界面
 
 ![桌面控制台（公开截图中已移除配对区与设备管理区）](./docs/assets/ui-desktop.png)
@@ -110,6 +126,8 @@ node .\bin\agentbridge.js phone --agent deepseek-harness
 若自动选择的局域网地址手机访问不到，显式指定 `AGENTBRIDGE_PUBLIC_ORIGIN`；Windows 防火墙提示时只放行「专用网络」。
 
 ## 安全边界
+
+![访问边界：本地配对与管理接口只允许 loopback；远程访问使用私有网络或受访问密钥保护的隧道。](./docs/assets/security-boundaries.svg)
 
 - 二维码里是一次性配对码，不是 Agent 凭据；磁盘只保存设备 token 的 SHA-256 摘要。
 - 设备 cookie 为 `HttpOnly` + `SameSite=Strict`；修改型请求校验同源，命令 ID 防重放，同一会话同时只有一台设备持有输入租约。
