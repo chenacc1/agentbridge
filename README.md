@@ -1,7 +1,5 @@
 # AgentBridge MVP
 
-[中文文档](./README.zh-CN.md) | [English](./README.md)
-
 AgentBridge lets a phone opened from WeChat's scanner control coding agents running on this computer. The desktop and phone use the same append-only event stream, so messages, tool activity, approvals, and task state stay in sync.
 
 This repository is a working local-first MVP. It includes:
@@ -14,31 +12,6 @@ This repository is a working local-first MVP. It includes:
 - real OpenAI Codex App Server and Claude Code CLI adapters;
 - a real DeepSeek Harness ACP adapter and a truthful ZCode native-remote handoff.
 - a DSH Desktop `/phone` bundle that binds the exact open Desktop conversation.
-
-## See how it works
-
-![AgentBridge architecture: a local desktop bridge connects paired phone control to approved coding-agent adapters.](./docs/assets/architecture.svg)
-
-The phone receives a short-lived QR pairing link, then sends commands and receives the same append-only event stream as the desktop. Provider credentials and child processes remain on the computer.
-
-![AgentBridge scan-to-control flow: start locally, scan once, pair the phone, then continue the selected coding-agent session.](./docs/assets/phone-flow.svg)
-
-For the network and access boundaries, see the [security guide diagram](./docs/assets/security-boundaries.svg). A complete Chinese guide is available in [README.zh-CN.md](./README.zh-CN.md).
-
-For a visual, interactive explanation of Workspaces, conversations, QR pairing, and all four remote modes, open [`docs/agentbridge-product-guide.html`](./docs/agentbridge-product-guide.html) locally in a browser.
-### Front-end previews
-
-#### Desktop console
-
-![Desktop AgentBridge console, with the pairing and device-management strip intentionally excluded from this public example.](./docs/assets/ui-desktop.png)
-
-The desktop view brings the selected Agent session, model controls, activity timeline, and message composer into one workspace. The pairing QR and device-management area are deliberately excluded from this public screenshot because they contain short-lived or device-specific data.
-
-#### Mobile control
-
-<p align="center"><img src="./docs/assets/ui-mobile.png" alt="Mobile AgentBridge control console" width="360" /></p>
-
-The same session adapts to a narrow phone viewport: use the control handoff, select supported models and reasoning level, follow task events, then send a message without exposing credentials outside the computer.
 
 ## Install `/phone` from a GitHub release
 
@@ -113,6 +86,7 @@ tailscale set --operator="$env:USERNAME"
 
 The operator setting persistently allows that Windows account to control the local Tailscale service, so AgentBridge does not apply it silently. It does not grant access to other tailnets, but it is still a local privilege change and should be enabled only for your own trusted Windows account.
 
+If the phone cannot connect, confirm it can open the shown `http://100.x.y.z:8787` address while Tailscale is connected. Windows Firewall should allow Node.js on the Tailscale/private network; do not expose TCP 8787 through the router. The full threat model, alternatives, and acceptance checklist are in [`docs/tailscale-remote-mode-research.md`](./docs/tailscale-remote-mode-research.md).
 
 ### ZeroTier one-click remote mode (works where Tailscale is unreliable)
 
@@ -223,13 +197,28 @@ AgentBridge can also discover persisted Codex threads for one registered workspa
 
 The authenticated catalog API is `GET /api/conversations?workspaceId=<workspace-id>&adapterId=codex`. It reads only the local catalog by default. Add `&refresh=1` for an explicit Provider refresh; protocol mismatches return a degraded diagnostic instead of falling back to private transcript files.
 
-The console now presents a Workspace list first and the selected Workspace's conversations second. “同步历史” is always an explicit action, and creating a conversation defaults to the current Workspace. The same navigation is used in direct, ZeroTier, and Cloudflare remote modes because those modes change only how the phone reaches AgentBridge, not the local Workspace/session catalog.
+On a phone the top bar is a single 44px row — brand (truncating) and connection state side by side — while the drawer toggle is a 44×44 button fixed to the top-left corner with `env(safe-area-inset-*)`, so the Agent/project switcher stays reachable at any scroll position and fades out while the drawer is open. Below 360px the brand text and the connection label collapse to the mark and the dot instead of wrapping. The return strip is one compact line whose details expand on demand and are remembered. The console navigates through one drawer, ordered **Agent → project → conversation**. It is an overlay on a phone (☰ in the top bar) and a permanent 320px sidebar on a wide window, so the same tree serves both without a second navigation UI. An Agent that only has one project skips the project row, so reaching any conversation is two taps; a multi-project Agent gets the project layer because that is what splits it. Agents are ordered by their most recent conversation, uninstalled ones last, and each row carries what it can actually do (`可新建` / `仅桌面附着` / `未安装`) instead of hiding the tools that cannot be used. Expansion is remembered per Agent, and typing in the search box expands whatever it matched.
+
+Creating a conversation moved to the drawer header: ＋ opens a bottom sheet that lists every Agent with its real capability, preselects the first one that can create, and blocks submission for attach-only or native hand-off entries with the reason. “刷新状态” re-reads the catalog; “同步历史” appears only when an installed Agent can publish its conversation list, and it opens a sheet that asks which Agent reads which project instead of guessing. It never starts a conversation and only registers what that Agent can publicly list. A conversation longer than one page keeps its older entries one tap away through the 加载更早 control, which pages backwards by `seq` and holds the reading position while the earlier page is inserted above. The same navigation is used in direct, ZeroTier, and Cloudflare remote modes because those modes change only how the phone reaches AgentBridge, not the local Workspace/session catalog.
 
 You can optionally run `npm link` once and shorten these commands to `agentbridge phone ...`. The installed Codex skill is the convenient project-directory entry point; the CLI remains the reliable path when you already know the exact Codex thread ID to resume.
+
+When a Codex turn stops to ask something, the phone shows it as a card. Codex sends that as an experimental `item/tool/requestUserInput` server request; AgentBridge renders its questions and options and answers with `{ answers: { <question id>: { answers: [<label>] } } }`. Skipping such a question is answered as a JSON-RPC error so Codex continues instead of waiting. Earlier releases replied `-32601` to that method, which is why the phone showed nothing and the run appeared stuck. Approval prompts were already supported and are unchanged.
 
 ### Which model does it use?
 
 Codex and Claude keep the provider conversation's own model configuration by default. For a Codex phone session, AgentBridge requests `model/list` from the local App Server and shows only that account's picker-visible models plus the supported reasoning strengths; a selected pair is sent as `model` and `effort` on later turns. Set `AGENTBRIDGE_CLAUDE_MODEL` before starting AgentBridge only when you need an explicit Claude Code model override. For Kimi Code, use an API model ID such as `kimi-for-coding`, not the display/version name `kimi-k2.7-code`. A Claude process that produces no structured output within 30 seconds is stopped with a visible error instead of leaving the phone page waiting indefinitely.
+
+### Claude Code questions and approvals
+
+Claude Code asks a human over its **control stream**. AgentBridge therefore runs it with `--input-format stream-json` (the prompt goes in on stdin) and `--permission-prompts host`, and answers `can_use_tool` control requests from the phone:
+
+- `AskUserQuestion` becomes a phone question card. Claude keys its answers by the question text, so the card's option labels are returned as `answers[<question text>]`, comma-joined for multi-select, with free text in `response`.
+- Every other tool that needs a decision becomes a phone approval card: **仅本次批准** replies `{behavior:"allow"}`, **拒绝** replies `{behavior:"deny"}`.
+- A control request the bridge does not understand is refused explicitly, because leaving it unanswered would park the turn.
+- A prompt nobody answers is denied after `AGENTBRIDGE_CLAUDE_INTERACTION_TIMEOUT_MS` (default 5 minutes) and the turn continues, with **超时未答，已自动拒绝** recorded on the phone. Without that guard a lost phone would reproduce the original symptom: a run that silently never continues.
+
+`--permission-prompts none` — the previous setting — made Claude Code delete `AskUserQuestion` and auto-deny every prompt, so the phone could never see one. It is no longer used.
 
 To expose more projects, set aliases before starting the server:
 
@@ -242,21 +231,239 @@ The phone sends only an alias such as `web`; the server resolves it to an allowl
 
 The `/phone` launcher is the only exception: it accepts an absolute current directory exclusively from a loopback connection on this computer, confirms that the path is an existing directory, canonicalizes it, and creates a temporary local alias. A phone request cannot use this endpoint or submit a path.
 
+## Driving an agent while you are away
+
+Three features exist for the same reason: the point of a phone console is that you
+are not sitting in front of the computer, so anything that forces you back to the
+desk is a hole in the product.
+
+### Notifications when the agent needs you
+
+An approval, a question, a finished turn, or a failure can now reach a chat app
+instead of only a page you have to be looking at. Set one environment variable and
+pick a format:
+
+```powershell
+$env:AGENTBRIDGE_NOTIFY_WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+$env:AGENTBRIDGE_NOTIFY_FORMAT  = "wecom"   # json (default) | wecom | telegram | serverchan | pushplus
+# telegram also needs: $env:AGENTBRIDGE_NOTIFY_CHAT_ID = "123456789"
+# pushplus also needs: $env:AGENTBRIDGE_NOTIFY_TOKEN   = "你的 token"
+# optional: $env:AGENTBRIDGE_NOTIFY_LINK = "1"  (adds the app link, including the access key)
+```
+
+Settings can also live in `.agentbridge/notify.json`, which is the recommended place
+for the token: that directory is git-ignored, and a double-clicked launcher inherits no
+shell environment, so a file works where `setx` in a previous window does not.
+Environment variables still win when both exist.
+
+```json
+{
+  "webhook": "https://www.pushplus.plus/send",
+  "format": "pushplus",
+  "token": "your-pushplus-token",
+  "channel": "clawbot"
+}
+```
+
+The phone has a switch for it. The drawer footer shows
+`推送中（pushplus · clawbot）` with a **静音** / **开启** button, which posts
+`POST /api/notifications { muted }`. Muting is a *bridge* state, not a per-device one:
+it silences every notification, keeps the webhook and token intact, and is written into
+`notify.json` so the switch keeps its position across restarts and works no matter how
+the bridge was launched (a double-clicked shortcut inherits no shell environment, which
+is exactly why the file, not `setx`, carries this). While muted, 发送测试 answers
+`sent: false, reason: "muted"` instead of pretending.
+`channel` is provider-specific and currently used by PushPlus: `clawbot` delivers to the
+微信ClawBot channel, `wechat` to the WeChat service account, and leaving it out uses the
+account default. Change the file and restart the bridge — the console then reports
+`已开启（pushplus · clawbot）`, and 发送测试 posts a real message through that channel.
+PushPlus is the shortest path if you only have personal WeChat: it delivers to the
+PushPlus WeChat service account, so a `POST` to `https://www.pushplus.plus/send` with
+`{token, title, content, template:"txt"}` is enough (the token may also sit in the URL,
+as `/send/{token}` or `?token=…` — a token already in the URL is not duplicated into
+the body). Other common endpoints: WeCom group bot (`wecom`), Telegram
+(`https://api.telegram.org/bot<token>/sendMessage` with `chat_id`), ServerChan
+(`https://sctapi.ftqq.com/<SENDKEY>.send`).
+
+**Failures are read from the response body, not just the status code.** These services
+answer `200` and put the verdict inside: WeCom uses `errcode`, PushPlus and ServerChan
+use `code` (PushPlus success is exactly `200`), Telegram uses `ok`. A rejected message
+therefore comes back from 发送测试 as `sent: false, reason: "provider-913:token 无效"`
+instead of a false success — which is what a wrong key looks like in practice.
+
+Only five events are forwarded — `approval.requested`, `input.requested`,
+`turn.completed`, `turn.failed`, `session.failed` — because everything else is
+transcript traffic the phone catches up on when it next opens. Repeats of the same
+kind for the same conversation are damped for 15 seconds, so a long turn cannot
+spam the chat. A dead webhook is logged and swallowed: it can never fail the turn it
+describes. Without `AGENTBRIDGE_NOTIFY_WEBHOOK` the feature is inert, the console
+says so, and `npm run verify:notify` still passes.
+
+The desktop pairing panel shows whether notifications are on and offers **发送测试**,
+which posts a real message through the configured channel.
+
+### Time-boxed blanket approval
+
+Waiting on a confirmation for every tool call defeats the purpose of leaving the
+phone in your pocket. **自动放行** in the session header arms a policy for 5, 10 or 30
+minutes: matching approvals are answered with `approve` automatically, and the
+conversation records each one as `已自动放行（限时策略）` so the trail stays honest.
+
+The limits are deliberate and enforced on the server, not in the UI: 30 minutes
+maximum whatever the client asks for, a scope list (`shell` by default, or every
+tool if you tick the box), only the phone holding the input lease may arm or cancel
+it, and expiry is checked against the clock on every use. The armed state renders as
+a live countdown pill — tap it to cancel — and travels in `/api/state` as
+`session.autoApprove` so the desktop and phone agree.
+
+### Searching what was said
+
+The drawer's search box filters titles and projects locally, then asks
+`GET /api/search?q=…` for matches inside message text (and tool commands). Results
+show the conversation, the speaker, the time and a snippet; tapping one opens that
+conversation. The search reads the in-memory window first and falls back to
+`events.jsonl` for anything already evicted, keeps at most five hits per
+conversation so one long chat cannot drown the list, and reports `truncated` when
+the log itself was longer than the read budget.
+
+### Surviving a bridge restart
+
+Before this, restarting the bridge left every DSH Desktop conversation permanently
+"offline": the companion's channel was gone, its polls got `401`, and the only cure
+was walking back to the computer and running `/phone` again. The integration now
+recognises `401/403/404/409/410` as "this channel no longer exists" and re-registers
+itself — same DSH conversation, same bridge session, same input lease, no new pairing
+code and no new device — with an immediate first attempt and exponential backoff up
+to six tries. The register endpoint takes `reconnect: true` for exactly this case and
+answers `200 { reconnected: true }` instead of minting a pairing.
+### Sending a picture or a file
+
+The phone is usually the device holding the thing the agent needs — a screenshot of
+the error, a photo of the whiteboard, a log file. The composer has an attach button:
+files upload as raw bytes (`POST /api/sessions/:id/attachments`, 8 MB each, six per
+message), appear as pending chips, and travel with the message you send next.
+
+How an attachment reaches the agent depends on what the provider can take:
+
+| Agent | Images | Other files |
+|---|---|---|
+| Claude Code | `image` content block (base64, inline) | absolute path in the prompt |
+| DeepSeek Harness (ACP) | `image` prompt block | absolute path in the prompt |
+| OpenAI Codex | absolute path (`[附件] name → path`) | same |
+| DSH Desktop | absolute path (the companion forwards text) | same |
+
+Uploads live in `.agentbridge/attachments/` with a small catalog so a preview URL
+survives a restart, capped at 400 files overall and 60 per conversation — oldest are
+dropped first, files and all. An oversized upload answers a real `413` (the server
+drains the body instead of resetting the socket, so the phone can tell "too big" from
+"no connection"), and only the device holding the input lease may write into a
+conversation. The transcript renders images as thumbnails backed by
+`GET /api/attachments/:id`, and other files as named chips.
+
+### Typing while the agent is working
+
+A busy agent used to answer `409`. Now the message queues: the composer clears, the
+queue appears above it as `第 1 位 · …` with a 撤回 button, and the message is sent the
+moment the current turn ends. Five messages can wait; a sixth is refused with a
+message that says so. The queue is part of `/api/state` (`session.queued`), so every
+client shows the same list, and cancelling is `POST /api/sessions/:id/queue/cancel`.
+
+### Speaking instead of typing
+
+When the browser exposes a speech engine (`SpeechRecognition`/`webkitSpeechRecognition`)
+the composer shows a microphone: press it, talk, and the transcript lands in the
+message box for you to edit before sending. Where the engine does not exist — most
+WeChat webviews — the button is simply absent, and the phone keeps the normal
+keyboard instead of a button that cannot work.
+
+### Tool calls you can actually read
+
+A tool entry shows the command with a **复制命令** button, and output longer than 240
+characters collapses into `展开完整输出（N 字符）` so one long build log cannot push the
+conversation off the screen. Both are plain `<details>` and a data attribute — no
+client state to desync.
+
+### What it costs
+
+The session header counts what can be counted: `12 轮对话 · 34 次工具`. Token totals are
+added when the provider reports them (Claude does, on its result frame: `1.2k → 340
+tokens`); the line never shows a number the agent did not supply.
+
+### Caching, so opening the console is cheap
+
+Every asset in the shell is content-addressed: `index.html` (always `no-store`)
+references `/app.js?v=<hash>` and `/styles.css?v=<hash>`, the stylesheet versions the
+photo it points at, and a request whose `?v=` matches is answered
+`public, max-age=31536000, immutable`. Changing a file changes its stamp, so there is
+no stale-asset failure mode; a stale or missing stamp falls back to `no-store`. The JS
+modules share one bundle stamp (a change to `markdown.js` must also invalidate
+`transcript.js`, which imports it — one stamp is simpler and correct), while the photo
+is hashed on its own so replacing only the picture still busts the cache.
+
+### Knowing when the desktop copy is old
+
+The DSH integration is a *copy* inside the DSH profile, so editing this repository does
+nothing until `npm run install:dsh-phone` runs again. The integration reports
+`integrationVersion` on every register, and the desktop panel says `已连接，版本 vN` or,
+if the paired companion is behind,
+`桌面端集成是旧版（vN，需要 vM）：运行 npm run install:dsh-phone 并重启 DSH Desktop`.
+
+A stale copy is not only a missing feature. A build without the reconnect logic treats
+the bridge's `Invalid DSH Desktop channel` (401) as an ordinary error, so after a bridge
+restart it retries that dead channel forever — around ten log lines a second in
+`%APPDATA%\DSH Desktop\logs` — while the phone sees a conversation it cannot drive. The
+symptom to recognise is `DSH Desktop companion is not registered` on the phone after 安全停止
+and restarting the bridge.
+
+### After a bridge restart, the phone takes the conversation back by itself
+
+Restarting the bridge wipes every channel it handed out. The desktop companion notices the
+first 401 (401/403/404/409/410 all mean "this channel no longer exists"), re-registers with
+`reconnect: true`, and the bridge re-binds the *same* bridge session — same conversation,
+same controller lease, no pairing code, no `/phone`. The retry has no attempt cap: only the
+interval is capped (30 s), because stopping and starting the bridge by hand takes longer
+than the six attempts an earlier build allowed, and giving up there left the conversation
+permanently dead until someone walked back to the desktop. Only closing the DSH conversation
+stops it.
+
+Until that re-registration lands, the phone says so instead of pretending: a DSH Desktop
+session with no live companion carries `desktopConnected: false`, the conversation shows a
+neutral hint (`桌面端还没连上这个会话：…执行 /phone…`) rather than a red execution failure,
+and the composer is disabled with a matching placeholder. It re-enables itself the moment
+the companion is back.
+
+### Questions reach the phone even when the desktop channel hiccups
+
+A DSH Desktop question (`ask_user_question`) is not a session event: it is read from DSH's
+own client stream and posted to the bridge on its own channel. Two failure shapes used to
+strand it:
+
+- **A giant event wedged the channel behind itself.** Event batches were cut by item
+  count only; one 1 MB tool output pushed a batch past the bridge's limit, the bridge
+  answered `Request body is too large`, and the replayed batch was refused again — forever.
+  Batches are now cut by byte budget (448 KB under the bridge's 1 MB cap), and any single
+  event that is still too big is shrunken at capture time (long strings clipped, and a
+  stub with just the event type as a last resort), so the channel always makes progress.
+- **A failed POST dropped the card.** The question's own POST used to log its failure and
+  move on, so a one-second blip (bridge restarting, channel mid-reconnect) lost the card
+  for the phone while the desktop kept showing it. Failed cards are now queued on the
+  conversation's lifetime and retried; a reconnect re-drains the same queue on the new
+  channel.
+
 ## Agent support
 
 | Adapter | MVP status | Transport | Important behavior |
 |---|---|---|---|
 | Echo | Ready | In-process | Safe synchronization test |
-| OpenAI Codex | Ready when installed | `codex app-server --stdio` | Streaming, cancel, and approval requests |
-| Claude Code | Ready when installed | `claude -p --output-format stream-json` | Streaming, resume, and cancel; permission prompts are denied in this MVP |
-| DeepSeek Harness | Ready when official dsh is installed | `dsh --profile acp` | Independent ACP sessions, committed-answer updates, cancel, and phone approval requests |
-| DSH Desktop current conversation | Ready after local bundle install | Public slash command + live Agent/session events | `/phone` binds exact session ID, cwd, provider, and model; bidirectional same-session sync |
+| OpenAI Codex | Ready when installed | `codex app-server --stdio` | Streaming, cancel, approval requests, and `request_user_input` questions |
+| Claude Code | Ready when installed | `claude --print --input-format stream-json` | Streaming, resume, cancel, model choice, phone approvals, and `AskUserQuestion` prompts over the control stream |
+| DeepSeek Harness | Ready when official dsh is installed | `dsh --profile acp` | Independent ACP sessions, committed-answer updates, cancel, phone approvals, and `elicitation/create` questions |
+| DSH Desktop current conversation | Ready after local bundle install | Public slash command + live Agent/session events | `/phone` binds exact session ID, cwd, provider, and model; bidirectional same-session sync, including questions and approvals; the phone can also open new DSH Desktop conversations while a companion is paired |
 | ZCode | Official native handoff | ZCode Desktop Remote Control / Bot Channel | Bridge deliberately cannot create or attach ZCode sessions because ZCode has not published that local session API |
 
 On Windows, the bridge resolves the installed Codex, Claude, or dsh package's native entry point. This preserves long-running stdio and avoids passing phone input through cmd.exe.
 
 ### DeepSeek Harness
-
 Follow the official Harness quick-start and complete its local model and credential configuration. Before opening AgentBridge, make sure this command shows help instead of starting the browser UI:
 
 ~~~powershell
@@ -272,6 +479,8 @@ node .\bin\agentbridge.js phone --agent deepseek-harness
 ~~~
 
 For a previously persisted Harness conversation, AgentBridge asks the current official ACP profile to resume the provider session ID. If the locally installed dsh version does not expose resume, the request fails visibly; it is never represented as a successful attach.
+
+The ACP path also answers questions. ACP v1 carries them as `elicitation/create`, so the adapter advertises `clientCapabilities.elicitation.form` during `initialize` and turns a form schema into a phone card: `enum` properties become options, `boolean` becomes 是/否, `string`/`number` become a text field, and `required` is enforced before the request is retired. The reply is `{ action: "accept", content }` with values typed from the schema, because the agent validates `content` again. Skipping replies `{ action: "decline" }`. URL-mode elicitations are declined immediately — the phone has no browser hand-off — which is why only form mode is advertised.
 
 #### DSH Desktop: pair the conversation already on screen
 
@@ -291,11 +500,39 @@ The command receives the live Agent object from DSH's public command runtime. It
 
 Phone messages become normal DSH follow-up messages in the same live Agent. DSH's public `session/event` stream sends Desktop-entered messages, text deltas, completed replies, tools, and turn state back to AgentBridge. Re-running `/phone` rotates the private companion credential and issues a new five-minute, single-use QR.
 
+#### Answer the agent's question from the phone
+
+When the agent stops to ask something — `ask_user_question` with options, or a one-off approval prompt — the turn is blocked until a human answers. `/phone` forwards those prompts through DSH's own client stream (`question/requested` and `approval/requested`) and answers them with `apiProxy.respond`, the same seam the desktop window uses. The phone renders one card per question with its options, an optional free-text field, and a skip button; answering on either side retires the card on the other.
+
+The answer travels back through the private loopback companion and is only reported as accepted after DSH Desktop confirms it. If the desktop window answers first, the phone card is retired with “已在电脑上回答” instead of failing when tapped.
+
 #### Choose an already configured DSH Desktop model from the phone
 
 After `/phone` has attached a DSH Desktop conversation, the phone console shows the current DSH provider/model and the model directory returned by that exact live DSH session. Choose a model and, when the provider exposes them, a reasoning effort, then tap **切换模型**. The request is accepted only when that phone owns the input lease and the current turn is idle. AgentBridge sends the selected entry through the private loopback companion; DSH Desktop's public `session.selectModel` validates and applies it, then returns the canonical selected model to the phone.
 
 The selector never accepts a free-form model name and it does not inspect DSH Desktop's window or modify `app.asar`. If the current DSH build cannot return a model directory, the selector remains unavailable and the phone continues to control the conversation normally.
+
+**The selector never silently disappears.** An Agent that can switch models always shows the control; when it cannot be used the row is disabled and says why:
+
+| State | What the phone shows |
+|---|---|
+| Live conversation, phone has not taken control | Enabled list, note “接管输入后才能切换模型。” |
+| Live conversation, phone owns the lease and is idle | Enabled list, note names where the directory came from |
+| Agent offline, directory remembered | Disabled list with the last known model preselected, note “这个会话的 Agent 当前离线：在 DSH Desktop 里运行 /phone 后即可切换模型。” |
+| Agent offline, never reported a directory | Disabled row, same note plus “也还没有上报模型目录” |
+
+That memory is durable: the model directory is written into the conversation catalog (`bridge-sessions.json`, capped at 20 providers × 40 models with their reasoning efforts) whenever a session becomes ready, so a bridge restart no longer erases which model a conversation was on. The live directory still comes from DSH and replaces the stored copy the moment the companion reconnects.
+
+#### Create a DSH Desktop conversation from the phone
+
+DSH Desktop conversations live inside the desktop app, so the phone cannot spawn one on its own. When a companion is paired, AgentBridge reports that Agent as creatable and asks it to open the conversation:
+
+1. The phone opens **＋ → DeepSeek Harness Desktop** and picks the project directory.
+2. AgentBridge creates the bridge session and sends a `create-session` command down the *existing* companion channel of that Agent (no second DSH process is started).
+3. The companion calls DSH's agent service to create a real session in that directory, then registers it back against the bridge session that asked for it.
+4. That registration completes the request: the conversation becomes ready with its model directory, and the phone that asked keeps the input lease. No second pairing code is minted.
+
+If no companion is paired the create sheet says so — the option reads **（桌面端离线）**, the submit button is disabled, and the sheet explains that you have to run `/phone` in DSH Desktop first. The capability is evaluated per request, so the same row becomes creatable the moment the companion connects. If the desktop build cannot create conversations (a DSH build without `ctx.agents.create`), the phone gets that reason as the create result instead of a silent failure. A create request that is never answered fails after 45 seconds with the reason, and a registration that arrives for a request nobody made is rejected rather than opening a stray conversation.
 
 AgentBridge must already be running at `http://127.0.0.1:8787`. If a different local origin is needed, start DSH Desktop with `AGENTBRIDGE_ORIGIN` set to that loopback origin. To remove the integration:
 
@@ -362,16 +599,19 @@ A production Official Account or WeCom integration is a separate channel adapter
 - `POST /api/local/dsh-desktop/register`: loopback-only registration of the exact live DSH Agent from `/phone`.
 - `GET /api/local/dsh-desktop/channels/:id/poll`: authenticated local companion command queue.
 - `POST /api/local/dsh-desktop/channels/:id/events`: authenticated DSH event ingestion.
+- `POST /api/local/dsh-desktop/channels/:id/interactions`: authenticated DSH question/approval frames (answerable, so they stay off the seq-deduplicated event stream).
 - `GET /api/workspaces`: authenticated, path-redacted Workspace catalog.
 - `GET /api/conversations?workspaceId=...`: read the local conversation catalog; add `adapterId=codex&refresh=1` for explicit Provider discovery.
 - `GET /api/state`: machine, device, adapters, Workspaces, sessions, and event cursor.
-- `GET /api/events?after=<seq>`: resumable SSE stream. The `after` parameter is optional; the phone relies on the browser's own `Last-Event-ID`, so an automatic reconnect resumes instead of replaying the whole buffer.
+- `GET /api/events?after=<seq>`: resumable SSE stream. The `after` parameter is optional; the phone relies on the browser's own `Last-Event-ID`, so an automatic reconnect resumes instead of replaying the whole buffer. A fresh page with no cursor receives only the newest 500 events.
+- `GET /api/sessions/:id/history?limit=300&before=<seq>`: one conversation's history. Served from the replay window, or read back from the append-only log for a session the window has already evicted. `before` pages backwards, which is what the phone 加载更早 control uses; the response reports `hasMore` and `oldestSeq`. `no-store`.
 - `POST /api/sessions`: create an adapter session.
 - `POST /api/sessions/:id/messages`: send an idempotent command.
 - `POST /api/sessions/:id/model`: apply a model and optional reasoning choice from the Provider-supplied allowlist.
 - `POST /api/sessions/:id/control`: claim or explicitly take over input control.
 - `POST /api/sessions/:id/stop`: interrupt the active turn.
-- `POST /api/approvals/:id`: resolve a Codex approval request.
+- `POST /api/approvals/:id`: resolve a pending approval request (Codex, DeepSeek Harness ACP, or DSH Desktop).
+- `POST /api/requests/:id`: answer a pending agent question with `{ answers: [{ id, selected, custom? }] }`, or `{ cancel: true }` to skip it.
 
 ## Verification
 
@@ -384,6 +624,10 @@ npm run verify:mobile   # optional; needs Chrome or Edge
 The tests cover configuration, one-time and session-bound pairing, event persistence and cursors, project allowlisting, loopback current-directory registration, adapter attach/resume, DSH Desktop channel authentication and event mapping, transcript folding and history retention, delta coalescing, concurrent channel ingest ordering, idempotent plugin installation/removal, CLI skill generation, command idempotency, control leases, authenticated HTTP flows, and SSE replay.
 
 `npm run verify:mobile` drives the real mobile page in headless Chrome against a real bridge server, using the real DSH Desktop channel pipeline, and asserts the whole conversation is displayed: after a reload, while a reply streams, and once it is committed. Set `CHROME_PATH` if the browser is not in a standard location.
+
+The other `verify:*` scripts each boot a real bridge and a real headless browser: `verify:navigation` (drawer navigation, history paging, and a style audit that all drawer rows share one radius while the notification card's border and blur equal `.create-sheet`'s), `verify:models` (the model and reasoning popovers), `verify:scrim` (background and text contrast), `verify:notify`, `verify:attach`, `verify:features`, `verify:blocks`, and `verify:guide`.
+
+Two failure modes are covered by tests because they used to take the whole process down: an event that cannot be written to the log is reported and dropped rather than thrown back at the adapter that emitted it fire-and-forget, and a failed catalogue write no longer skips the queue, notification and log work that follows it. A `send` whose own event cannot be logged still fails with `503` — a client that is waiting for an answer should be told to retry.
 
 ## Design notes
 
@@ -404,3 +648,69 @@ Agents emit one event per token, and a single long turn can produce thousands of
 - `public/transcript.js` holds that folding logic plus entry building, so it can be tested directly with Node and the real Markdown renderer. `public/app.js` only does DOM work: it renders on a throttle, diffs entries by key, and rewrites just the reply that is still growing.
 
 A phone that reconnects mid-turn still sees the in-progress text, because the retained delta carries everything streamed so far.
+
+### Background image
+
+The photo is shown **as-is**: no `filter` (no blur), no plate behind the text, and one whole-page white veil over it. `public/background.jpg` is painted full-viewport with `background-size: cover` on one fixed layer (`body::before`), so every screen fills itself and crops instead of stretching. The current picture is a `2048×1152` landscape (16:9) shot of the Jade Dragon mountain — re-encoded from the `3.3 MB` source PNG to a `456 KB` JPEG at quality 92 (mean channel delta against quality 94 is `1.06/255`, i.e. invisible, for 11% fewer bytes). At 16:9 the source fits the viewport *height* on both a portrait phone and a wide window, so all cropping is horizontal and only `background-position`'s **X** does anything: it is `0% center` at every width (see below for why). It uses a fixed pseudo-element rather than `background-attachment: fixed`, which jitters inside the WeChat webview. One trap matters: the photo sits at `z-index: -2`, and a non-transparent `body` background paints *over* negative z-index children, so `body` must stay `transparent` and the base colour lives on `html` instead.
+
+The crop is centred (`background-position: center`). At 16:9 the source fits the viewport height on both a portrait phone and a wide window, so all cropping is horizontal; centring keeps the mountain ridge in frame on every screen, which is the point of using a landscape photo at all.
+### The scrim: one white veil
+
+`body::after` is a single fixed, full-viewport layer at `z-index: -1` with `pointer-events: none` and one declaration: `background: rgba(255, 255, 255, 0.58)`. No blend mode, no mask, no second colour — the photo sits underneath and a uniformly translucent white sheet sits on top.
+
+The alpha is the only parameter, and it was measured rather than guessed. Body text `#14141c` needs the darkest possible backdrop to stay above `6:1` (below that the same text reads fuzzy on a mid tone, which is a measured threshold, not a taste):
+
+| Veil alpha | Phone body contrast | Desktop body contrast | Photo saturation kept |
+|---|---|---|---|
+| `0.55` | 5.74:1 | 6.11:1 | 45% |
+| **`0.58` (shipped)** | **6.28:1** | **6.69:1** | **42%** |
+| `0.62` | 7.09:1 | 7.46:1 | 38% |
+
+`0.58` is the smallest alpha that clears `6:1` on both, so it keeps the most photo. Measured on the shipped values at 390×844, 1440×1000 and 320×568: body `6.28–6.69:1`, secondary text `#2b3038` `6.03–6.43:1`, user messages 4.90:1, italic labels 4.84:1, error lines 4.65:1 — everything above AA. Texture survives at `65%`, hue rotation is `3.4°`, and `0.1–0.2%` of pixels clip toward white.
+
+What this design costs, stated plainly: the veil is uniform, so it mixes white into *every* pixel, including the bright snow. The photo keeps its composition and its colour family (hue rotation 3.4°) but loses saturation — measured `42%` of the original chroma. That is the price of three lines of CSS instead of a masked, blended lift; the earlier masked `screen` version kept `70%` of the phone's pixels byte-identical and `88%` of the texture where it acted, at the cost of a generated mask asset and a much longer rule.
+
+`prefers-reduced-transparency: reduce` and `prefers-contrast: more` raise the veil to `--bg-scrim-veil-solid` (`rgba(255,255,255,0.72)`). Text surfaces stay transparent: `.event-entry`, `.session-header` and `.empty-state` all compute to `background: rgba(0, 0, 0, 0)`, and no glyph carries a `text-shadow` halo (an earlier revision did, and that halo is what made text look blurred).
+### Why the background can differ from the original file
+
+Three things can change it, measured separately:
+
+| Source of change | Size | Verdict |
+|---|---|---|
+| PNG → JPEG re-encode (quality 92) | mean channel difference `1.3 / 1.2 / 1.5` out of 255 (0.5%) | invisible; chroma 10.2 → 10.3 |
+| The white veil | hue rotation `3.4°`, saturation `42%`, texture `65%` | colour family survives; the picture reads lighter and less saturated |
+| The `cover` crop | a portrait phone sees a 532 px slice of the 2048 px original | unavoidable; centring picks the middle slice |
+
+So: the file itself is faithful, and the hue is faithful too (`3.4°`). What a uniform white veil changes is **brightness and saturation** — it lifts the whole picture toward white by the same amount everywhere, which is exactly what it is for, and exactly why half a stop of colour disappears with it.
+
+If you want the photo closer to the file, the levers are, in order of effort: lower `--bg-scrim-veil` (each `0.04` of alpha costs about `0.5:1` of body contrast — `0.50` lands near `5.4:1`, which is above AA but in the "soft" band); change `background-position` so the visible slice is a brighter part of the picture (a brighter slice needs a weaker veil, because contrast depends on the darkest pixel behind text); or go back to a masked lift, which is what the repository did before this simplification.
+### How message content is presented
+
+Agent answers mix prose, tables, formulas and code, and rendering all of it as one paragraph is what makes the important part hard to find. Each block type is rendered by its own kind, and every one of them is escaped first, so model output still cannot inject HTML:
+
+| Content | Rendering |
+|---|---|
+| Table (`\| a \| b \|` plus a `---` rule) | A real `<table>` with a header row, zebra striping, and per-column alignment from `:---` / `---:` / `:---:`. The table scrolls inside its own box so a narrow phone never scrolls sideways. A pipe line without a separator stays prose. |
+| Formula | `$inline$`, `\(inline\)`, `$$block$$` and `\[block\]` are typeset by KaTeX, fetched on demand from this bridge (never a CDN) and rendered with `trust: false`, so `\href`/`\htmlClass` cannot become an injection route. Inline code wins over math, and `$5 与 $10` stays money because a dollar pair with a space inside, or a digit right after the closer, is not treated as math. |
+| Fenced code | Its own card: a language badge from the fence info string, a 复制 button that copies the source text, dark surface, and horizontal scroll without wrapping. Comments, strings, numbers and keywords are coloured by a 6.8 KB local highlighter (`public/highlight.js`) covering JavaScript/TypeScript, Python, shell, JSON, CSS, HTML, SQL, YAML, Go, Rust and the C family. An unknown fence language falls back to escaped plain text, and every language keeps the source byte-for-byte identical. |
+| Headings, lists, quotes, rules | Kept from the previous subset, with spacing that separates sections from prose. |
+
+KaTeX is a dependency rather than a vendored blob, so `npm install` is enough; `/vendor/katex/*` serves only its own asset types from the installed package. The page keeps `script-src 'self'` and allows inline styles only because KaTeX positions every glyph with a style attribute.
+
+`npm run verify:blocks` checks this in a real browser at 390×844: the table is a table with aligned columns, the formula is typeset with KaTeX's own font, the code card offers copy, and the page does not scroll horizontally.
+
+### Switching conversations and loading history
+
+History used to arrive only through one global replay, and that caused both symptoms people hit when switching conversations — an empty transcript, or one that crawled in for a long time:
+
+- A fresh page had no cursor, so the server replayed the whole in-memory window. Measured on a real log that was **3.09 MB**, of which 35% was `session.ready` repeating the entire model directory (~43 KB per attach) and 43% was raw tool arguments and tool output. Over a tunnel that is many seconds before anything appears.
+- The window is global (`maxMemory` events across every conversation) and the client trims its own buffer, so a quiet conversation could be pushed out entirely. Selecting it rendered an empty log with no way to get it back, because nothing served one conversation's history.
+
+Both are fixed:
+
+- A fresh page receives only the newest `INITIAL_REPLAY_EVENTS` (500) events — **0.71 MB** on the same log. Reconnects still resume from the browser's `Last-Event-ID`, so an open page keeps its cursor.
+- `GET /api/sessions/:id/history?limit=300` serves one conversation, authenticated and `no-store`. The store answers from memory while nothing has been evicted; once the window has dropped anything, it reads that session back from the append-only log, so an evicted conversation still loads. The phone fetches it once per conversation per page load and merges by `eventId` and `seq`, which is idempotent against a stream that is still arriving (measured: 18 KB–453 KB per conversation instead of 3.09 MB).
+- Trimming now evicts other conversations' oldest events first (`keepSessionId`), because a freshly fetched page is the oldest data in the buffer.
+- The log says **正在载入历史** while a fetch is in flight and **这段会话还没有记录** when the computer genuinely has nothing, instead of the old "准备好了 / 从第一条指令开始", which read as a failed load.
+- Status events no longer embed the session view, and tool commands/output are capped (2 KB / 4 KB with an explicit 已截断 marker). Conversation text is never truncated.
+

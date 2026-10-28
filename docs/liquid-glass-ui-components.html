@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AgentBridge Liquid Glass UI Components</title>
+  <style>
+    :root {
+      --paper: #f3f2ef;
+      --paper-warm: #fbf8f3;
+      --ink: #11131c;
+      --muted: #646875;
+      --line: rgba(38, 42, 56, 0.10);
+      --coral: #ff7f72;
+      --blue: #4d8cff;
+      --mint: #49d4a5;
+      --violet: #966df4;
+      --success: #2bbd83;
+      --radius-pill: 999px;
+      --radius-card: 34px;
+      --glass-fill: linear-gradient(145deg, rgba(255,255,255,.76), rgba(255,255,255,.34));
+      --glass-edge: conic-gradient(from 215deg,
+        rgba(255,127,114,.58),
+        rgba(255,255,255,.96) 14%,
+        rgba(77,140,255,.52) 32%,
+        rgba(255,255,255,.92) 48%,
+        rgba(73,212,165,.48) 65%,
+        rgba(255,255,255,.94) 78%,
+        rgba(150,109,244,.48),
+        rgba(255,127,114,.58));
+      --glass-shadow:
+        0 24px 48px rgba(32, 40, 64, .10),
+        0 7px 16px rgba(32, 40, 64, .09),
+        inset 0 2px 1px rgba(255,255,255,.98),
+        inset 0 -2px 4px rgba(59,72,104,.10);
+      --focus: 0 0 0 4px rgba(77, 140, 255, .22);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      font-family: Inter, "Noto Sans SC", "Microsoft YaHei UI", system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 18% 10%, rgba(255,127,114,.10), transparent 24rem),
+        radial-gradient(circle at 82% 22%, rgba(77,140,255,.10), transparent 26rem),
+        radial-gradient(circle at 50% 92%, rgba(73,212,165,.09), transparent 30rem),
+        linear-gradient(145deg, var(--paper-warm), var(--paper));
+      min-height: 100vh;
+    }
+
+    button, input { font: inherit; }
+    button { color: inherit; }
+
+    .page {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 72px 0 84px;
+    }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 860px;
+      margin: 0;
+      font-size: clamp(44px, 7vw, 88px);
+      line-height: .98;
+      letter-spacing: -.055em;
+    }
+
+    .gradient-text {
+      color: transparent;
+      background: linear-gradient(115deg, var(--blue), var(--violet) 52%, var(--coral));
+      -webkit-background-clip: text;
+      background-clip: text;
+    }
+
+    .lede {
+      max-width: 660px;
+      margin: 22px 0 0;
+      color: var(--muted);
+      font-size: clamp(16px, 2vw, 20px);
+      line-height: 1.7;
+    }
+
+    .material-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 28px;
+      padding: 8px 10px 8px 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-pill);
+      background: rgba(255,255,255,.55);
+      box-shadow: 0 10px 25px rgba(32,40,64,.06);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .switch {
+      position: relative;
+      width: 52px;
+      height: 30px;
+      padding: 0;
+      border: 0;
+      border-radius: var(--radius-pill);
+      background: linear-gradient(120deg, var(--mint), var(--blue));
+      cursor: pointer;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.72), 0 7px 16px rgba(77,140,255,.22);
+    }
+
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: white;
+      box-shadow: 0 3px 8px rgba(22,28,45,.22);
+      transition: transform .25s ease;
+    }
+
+    body[data-prism="quiet"] .switch::after { transform: translateX(-22px); }
+
+    .board {
+      position: relative;
+      margin-top: 54px;
+      padding: clamp(20px, 4vw, 48px);
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.82);
+      border-radius: 54px;
+      background:
+        linear-gradient(148deg, rgba(255,255,255,.70), rgba(255,255,255,.30)),
+        radial-gradient(circle at 50% 5%, rgba(255,255,255,.85), transparent 45%);
+      box-shadow: 0 35px 90px rgba(35,42,60,.10), inset 0 1px 0 white;
+      isolation: isolate;
+    }
+
+    .board::before,
+    .board::after {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      width: 360px;
+      height: 360px;
+      border-radius: 50%;
+      filter: blur(72px);
+      opacity: .22;
+      pointer-events: none;
+    }
+
+    .board::before { top: 20%; left: -210px; background: var(--coral); }
+    .board::after { right: -230px; bottom: 12%; background: var(--blue); }
+
+    .agent-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .liquid-glass {
+      position: relative;
+      z-index: 0;
+      border: 0;
+      background: transparent;
+      isolation: isolate;
+    }
+
+    .liquid-glass::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      border-radius: inherit;
+      background: var(--glass-edge);
+      box-shadow: var(--glass-shadow);
+    }
+
+    .liquid-glass::after {
+      content: "";
+      position: absolute;
+      inset: 5px;
+      z-index: -1;
+      border-radius: calc(inherit - 5px);
+      border-radius: inherit;
+      background: var(--glass-fill);
+      box-shadow:
+        inset 0 1px 1px rgba(255,255,255,.95),
+        inset 0 -10px 18px rgba(101,118,164,.06);
+      backdrop-filter: blur(22px) saturate(145%);
+      -webkit-backdrop-filter: blur(22px) saturate(145%);
+    }
+
+    .glass-shine {
+      position: absolute;
+      inset: 5px 18px auto;
+      height: 2px;
+      border-radius: 99px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.95), transparent);
+      pointer-events: none;
+    }
+
+    .agent-chip {
+      --chip: var(--blue);
+      min-height: 82px;
+      padding: 14px 18px;
+      border-radius: 28px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      transition: transform .2s ease, filter .2s ease;
+    }
+
+    .agent-chip:hover { transform: translateY(-3px); }
+    .agent-chip:focus-visible, .icon-button:focus-visible, .switch:focus-visible { outline: none; box-shadow: var(--focus); }
+    .agent-chip[aria-pressed="true"] { transform: translateY(-4px); filter: saturate(1.18); }
+
+    .orb {
+      flex: 0 0 auto;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 30% 24%, rgba(255,255,255,.92), transparent 28%),
+        linear-gradient(145deg, color-mix(in srgb, var(--chip), white 18%), var(--chip));
+      box-shadow: inset 0 1px 1px rgba(255,255,255,.9), 0 8px 18px color-mix(in srgb, var(--chip), transparent 68%);
+    }
+
+    .agent-chip span:last-child {
+      min-width: 0;
+      font-weight: 800;
+      font-size: 14px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .stage {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(280px, 1.28fr) minmax(180px, 1fr);
+      gap: clamp(18px, 3vw, 34px);
+      align-items: center;
+      margin-top: 42px;
+    }
+
+    .feature-stack { display: grid; gap: 18px; }
+
+    .feature-card {
+      min-height: 190px;
+      padding: 24px;
+      border-radius: var(--radius-card);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      cursor: pointer;
+      transition: transform .22s ease;
+    }
+
+    .feature-card:hover { transform: translateY(-4px) rotateX(1deg); }
+
+    .feature-card h3 {
+      margin: 18px 0 0;
+      font-size: clamp(17px, 2vw, 23px);
+      line-height: 1.2;
+      letter-spacing: -.025em;
+    }
+
+    .icon-button {
+      width: 62px;
+      height: 62px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      color: white;
+      background: linear-gradient(145deg, color-mix(in srgb, var(--accent), white 18%), var(--accent));
+      box-shadow:
+        inset 0 1px 1px rgba(255,255,255,.92),
+        0 12px 24px color-mix(in srgb, var(--accent), transparent 70%);
+      cursor: pointer;
+    }
+
+    .icon-button svg { width: 28px; height: 28px; stroke: currentColor; }
+
+    .phone-wrap {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-height: 570px;
+      perspective: 1200px;
+    }
+
+    .pedestal {
+      position: absolute;
+      bottom: 0;
+      width: 78%;
+      height: 76px;
+      border-radius: 50%;
+      background:
+        radial-gradient(ellipse at 50% 22%, rgba(255,255,255,.96), rgba(255,255,255,.18) 58%, rgba(105,118,157,.22));
+      border: 3px solid rgba(255,255,255,.72);
+      box-shadow: 0 28px 35px rgba(31,40,63,.15), inset 0 2px 3px white;
+    }
+
+    .phone {
+      position: relative;
+      z-index: 2;
+      width: min(100%, 340px);
+      min-height: 560px;
+      padding: 28px 20px 22px;
+      border-radius: 52px;
+      border: 1px solid rgba(255,255,255,.92);
+      background: linear-gradient(160deg, rgba(255,255,255,.88), rgba(244,246,250,.72));
+      box-shadow:
+        0 34px 48px rgba(30,38,60,.20),
+        0 10px 20px rgba(30,38,60,.12),
+        inset 0 0 0 6px rgba(255,255,255,.68),
+        inset 0 0 0 8px rgba(53,61,82,.16);
+      transform: rotateY(-2deg);
+    }
+
+    .phone::before {
+      content: "";
+      position: absolute;
+      top: 13px;
+      left: 50%;
+      width: 92px;
+      height: 27px;
+      border-radius: 20px;
+      background: #151821;
+      transform: translateX(-50%);
+    }
+
+    .phone-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 22px;
+      padding: 0 4px 18px;
+    }
+
+    .phone-header strong { font-size: 27px; letter-spacing: -.04em; }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border-radius: var(--radius-pill);
+      background: rgba(43,189,131,.10);
+      color: #147b58;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px rgba(43,189,131,.12); }
+
+    .agent-list { display: grid; gap: 11px; }
+
+    .agent-row {
+      display: grid;
+      grid-template-columns: 30px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 13px 14px;
+      border: 1px solid rgba(36,41,56,.08);
+      border-radius: 18px;
+      background: rgba(255,255,255,.62);
+      box-shadow: 0 8px 18px rgba(31,39,59,.05), inset 0 1px 0 white;
+    }
+
+    .agent-row.active { border-color: color-mix(in srgb, var(--row-color), transparent 60%); box-shadow: 0 10px 24px color-mix(in srgb, var(--row-color), transparent 86%); }
+    .agent-row .orb { width: 24px; height: 24px; --chip: var(--row-color); }
+    .agent-row strong { display: block; font-size: 14px; }
+    .agent-row small { color: var(--muted); }
+
+    .chevron { color: var(--muted); font-size: 22px; }
+
+    .phone-controls {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 18px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .control {
+      min-height: 54px;
+      border: 1px solid rgba(255,255,255,.92);
+      border-radius: 18px;
+      background: rgba(255,255,255,.64);
+      box-shadow: 0 9px 18px rgba(32,40,61,.07), inset 0 1px 0 white;
+      cursor: pointer;
+      transition: transform .18s ease, background .18s ease;
+    }
+
+    .control:hover { transform: translateY(-2px); background: white; }
+    .control:focus-visible { outline: none; box-shadow: var(--focus); }
+    .control[data-action="start"] { color: #168761; }
+    .control[data-action="stop"] { color: #d45656; }
+
+    .trust-bar {
+      margin-top: 30px;
+      min-height: 112px;
+      padding: 20px 28px;
+      border-radius: 36px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .trust-bar .icon-button { --accent: var(--mint); cursor: default; }
+    .trust-bar h2 { margin: 0; font-size: clamp(20px, 3vw, 34px); letter-spacing: -.035em; }
+    .trust-bar p { margin: 5px 0 0; color: var(--muted); }
+
+    .badge {
+      padding: 10px 14px;
+      border-radius: var(--radius-pill);
+      background: rgba(255,255,255,.62);
+      border: 1px solid rgba(255,255,255,.82);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .component-notes {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin-top: 28px;
+    }
+
+    .note {
+      padding: 22px;
+      border-top: 1px solid var(--line);
+    }
+
+    .note strong { display: block; margin-bottom: 7px; }
+    .note span { color: var(--muted); line-height: 1.6; font-size: 14px; }
+
+    body[data-prism="quiet"] {
+      --glass-edge: linear-gradient(145deg, rgba(255,255,255,.98), rgba(153,165,194,.35), rgba(255,255,255,.92));
+    }
+
+    @media (max-width: 920px) {
+      .agent-grid { grid-template-columns: repeat(2, 1fr); }
+      .stage { grid-template-columns: 1fr 1.25fr; }
+      .feature-stack:last-child { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; }
+      .phone-wrap { grid-row: span 2; }
+    }
+
+    @media (max-width: 680px) {
+      .page { width: min(100% - 20px, 560px); padding: 40px 0 56px; }
+      h1 { font-size: clamp(40px, 13vw, 64px); }
+      .board { margin-top: 34px; padding: 16px; border-radius: 34px; }
+      .agent-grid { grid-template-columns: 1fr; gap: 10px; }
+      .agent-chip { min-height: 68px; }
+      .stage { grid-template-columns: 1fr; margin-top: 26px; }
+      .feature-stack, .feature-stack:last-child { grid-template-columns: 1fr 1fr; grid-column: auto; }
+      .feature-card { min-height: 154px; padding: 18px; }
+      .feature-card h3 { font-size: 16px; }
+      .phone-wrap { grid-row: auto; min-height: 530px; order: -1; }
+      .phone { min-height: 520px; }
+      .trust-bar { grid-template-columns: auto 1fr; padding: 18px; }
+      .trust-bar .badge { grid-column: 1 / -1; justify-self: start; }
+      .component-notes { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+    }
+
+    @supports not (backdrop-filter: blur(1px)) {
+      .liquid-glass::after { background: rgba(247,248,250,.96); }
+    }
+  </style>
+</head>
+<body data-prism="full">
+  <main class="page">
+    <header>
+      <p class="eyebrow">AgentBridge · UI Material Study</p>
+      <h1>厚边透明 <span class="gradient-text">liquid glass</span></h1>
+      <p class="lede">从宣传图中复现的可用前端组件：彩色折射边缘、透明内层、柔和投影与清晰的交互层级。</p>
+      <label class="material-switch">
+        <span>虹彩折射</span>
+        <button class="switch" type="button" role="switch" aria-checked="true" aria-label="切换虹彩折射强度"></button>
+      </label>
+    </header>
+
+    <section class="board" aria-label="AgentBridge 液态玻璃组件展示板">
+      <nav class="agent-grid" aria-label="Agent 类型">
+        <button class="agent-chip liquid-glass" style="--chip: var(--coral)" type="button" aria-pressed="true" data-agent="Codex">
+          <i class="glass-shine"></i><span class="orb"></span><span>Codex</span>
+        </button>
+        <button class="agent-chip liquid-glass" style="--chip: var(--blue)" type="button" aria-pressed="false" data-agent="Claude Code">
+          <i class="glass-shine"></i><span class="orb"></span><span>Claude Code</span>
+        </button>
+        <button class="agent-chip liquid-glass" style="--chip: var(--mint)" type="button" aria-pressed="false" data-agent="DeepSeek Harness">
+          <i class="glass-shine"></i><span class="orb"></span><span>DeepSeek Harness</span>
+        </button>
+        <button class="agent-chip liquid-glass" style="--chip: var(--violet)" type="button" aria-pressed="false" data-agent="DSH Desktop">
+          <i class="glass-shine"></i><span class="orb"></span><span>DSH Desktop</span>
+        </button>
+      </nav>
+
+      <div class="stage">
+        <div class="feature-stack">
+          <article class="feature-card liquid-glass">
+            <i class="glass-shine"></i>
+            <button class="icon-button" type="button" style="--accent: var(--coral)" aria-label="查看实时流式同步">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M4 12h2m3-5v10m4-13v16m4-11v6m3-3h1" stroke-width="2.2" stroke-linecap="round"/></svg>
+            </button>
+            <h3>实时流式同步</h3>
+          </article>
+          <article class="feature-card liquid-glass">
+            <i class="glass-shine"></i>
+            <button class="icon-button" type="button" style="--accent: var(--mint)" aria-label="远程继续与停止">
+              <svg viewBox="0 0 24 24" fill="none"><path d="m8 6 9 6-9 6V6Z" stroke-width="2.1" stroke-linejoin="round"/></svg>
+            </button>
+            <h3>远程继续与停止</h3>
+          </article>
+        </div>
+
+        <div class="phone-wrap">
+          <div class="pedestal" aria-hidden="true"></div>
+          <section class="phone" aria-label="AgentBridge 手机控制台示例">
+            <div class="phone-header">
+              <strong>AgentBridge</strong>
+              <span class="status-pill"><i class="dot"></i><span id="statusText">运行中</span></span>
+            </div>
+            <div class="agent-list">
+              <div class="agent-row active" data-row-agent="Codex" style="--row-color: var(--coral)">
+                <span class="orb"></span><span><strong>Codex</strong><small>当前控制</small></span><span class="chevron">›</span>
+              </div>
+              <div class="agent-row" data-row-agent="Claude Code" style="--row-color: var(--blue)">
+                <span class="orb"></span><span><strong>Claude Code</strong><small>空闲</small></span><span class="chevron">›</span>
+              </div>
+              <div class="agent-row" data-row-agent="DeepSeek Harness" style="--row-color: var(--mint)">
+                <span class="orb"></span><span><strong>DeepSeek Harness</strong><small>运行中</small></span><span class="chevron">›</span>
+              </div>
+              <div class="agent-row" data-row-agent="DSH Desktop" style="--row-color: var(--violet)">
+                <span class="orb"></span><span><strong>DSH Desktop</strong><small>已暂停</small></span><span class="chevron">›</span>
+              </div>
+            </div>
+            <div class="phone-controls" aria-label="任务控制">
+              <button class="control" type="button" data-action="start" aria-label="继续任务">▶</button>
+              <button class="control" type="button" data-action="pause" aria-label="暂停任务">Ⅱ</button>
+              <button class="control" type="button" data-action="stop" aria-label="停止任务">■</button>
+            </div>
+          </section>
+        </div>
+
+        <div class="feature-stack">
+          <article class="feature-card liquid-glass">
+            <i class="glass-shine"></i>
+            <button class="icon-button" type="button" style="--accent: var(--blue)" aria-label="高风险操作审批">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M7 3h10a2 2 0 0 1 2 2v14H5V5a2 2 0 0 1 2-2Z" stroke-width="2"/><path d="M8 8h8M8 12h5" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <h3>高风险操作审批</h3>
+          </article>
+          <article class="feature-card liquid-glass">
+            <i class="glass-shine"></i>
+            <button class="icon-button" type="button" style="--accent: var(--violet)" aria-label="模型与推理强度切换">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10M9 4v6M7 14v6" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <h3>模型与推理强度切换</h3>
+          </article>
+        </div>
+      </div>
+
+      <section class="trust-bar liquid-glass" aria-label="安全说明">
+        <i class="glass-shine"></i>
+        <span class="icon-button" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M5 12.5 9.5 17 19 7.5" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div>
+          <h2>Agent 凭据始终留在电脑</h2>
+          <p>手机只负责控制，本机仍是唯一执行端。</p>
+        </div>
+        <span class="badge">统一 · 安全 · 随时可控</span>
+      </section>
+    </section>
+
+    <section class="component-notes" aria-label="组件实现说明">
+      <div class="note"><strong>厚边折射</strong><span>圆锥渐变边框叠加高光和内阴影，形成彩色玻璃厚度。</span></div>
+      <div class="note"><strong>透明内层</strong><span>半透明渐变与背景模糊保持内容清晰，同时保留材质感。</span></div>
+      <div class="note"><strong>可访问交互</strong><span>按钮支持键盘焦点、状态文本和减少动态效果偏好。</span></div>
+    </section>
+  </main>
+
+  <script>
+    const body = document.body;
+    const prismSwitch = document.querySelector('.switch');
+    const agentButtons = [...document.querySelectorAll('.agent-chip')];
+    const agentRows = [...document.querySelectorAll('.agent-row')];
+    const statusText = document.querySelector('#statusText');
+
+    prismSwitch.addEventListener('click', () => {
+      const quiet = body.dataset.prism === 'quiet';
+      body.dataset.prism = quiet ? 'full' : 'quiet';
+      prismSwitch.setAttribute('aria-checked', String(quiet));
+    });
+
+    agentButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        const selected = button.dataset.agent;
+        agentButtons.forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+        agentRows.forEach((row) => row.classList.toggle('active', row.dataset.rowAgent === selected));
+        statusText.textContent = `${selected} 已选中`;
+      });
+    });
+
+    document.querySelectorAll('.control').forEach((button) => {
+      button.addEventListener('click', () => {
+        const messages = { start: '运行中', pause: '已暂停', stop: '已停止' };
+        statusText.textContent = messages[button.dataset.action];
+      });
+    });
+  </script>
+</body>
+</html>

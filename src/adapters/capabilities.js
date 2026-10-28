@@ -4,6 +4,10 @@ const methodCapabilities = {
   discover: "discoverConversations",
   cancel: "stop",
   approve: "resolveApproval",
+  // Answering an agent's own question ("which option?") is a different seam
+  // from approving a risky operation, so it gets its own capability instead of
+  // riding on `approve`.
+  answer: "resolveInput",
   selectModel: "selectModel",
 };
 

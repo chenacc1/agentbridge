@@ -122,3 +122,112 @@ test("ZCode is explicitly a native handoff, not a createable bridge adapter", as
   assert.match(availability.docsUrl, /zcode\.z\.ai/);
   await assert.rejects(adapter.start(), /native Remote Control/);
 });
+
+// ACP asks the human with `elicitation/create` form mode. Without this the
+// request fell into the -32601 branch, so an ACP-backed agent could not ask and
+// the phone showed nothing.
+test("ACP elicitation becomes a phone question and answers with typed content", async () => {
+  let child;
+  const adapter = new DeepSeekHarnessAdapter({
+    probe: async () => ({ available: true, version: "test" }),
+    spawnProcess: () => {
+      child = new FakeAcpChild();
+      return child;
+    },
+  });
+  const handle = await adapter.start({ cwd: "D:\\work" });
+  const events = [];
+  handle.emit = async (kind, payload) => events.push({ kind, payload });
+
+  // ACP requires each mode to be advertised explicitly before an agent may ask.
+  assert.deepEqual(child.frames[0].params.clientCapabilities, { elicitation: { form: {} } });
+
+  child.stdout.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id: "elicitation-1",
+    method: "elicitation/create",
+    params: {
+      sessionId: "dsh-session-1",
+      mode: "form",
+      message: "How should I approach this refactoring?",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          strategy: { type: "string", enum: ["conservative", "balanced", "aggressive"], title: "Strategy" },
+          note: { type: "string", title: "Note" },
+          dryRun: { type: "boolean", title: "Dry run" },
+        },
+        required: ["strategy"],
+      },
+    },
+  })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const requested = events.find((event) => event.kind === "input.requested");
+  assert.ok(requested, "the elicitation never reached the phone");
+  const byId = new Map(requested.payload.questions.map((question) => [question.id, question]));
+  assert.deepEqual(byId.get("strategy").options.map((option) => option.label), ["conservative", "balanced", "aggressive"]);
+  assert.equal(byId.get("strategy").header, "Strategy");
+  assert.match(byId.get("strategy").question, /How should I approach this refactoring/);
+  assert.deepEqual(byId.get("dryRun").options.map((option) => option.label), ["是", "否"]);
+
+  await adapter.resolveInput(handle, requested.payload.requestId, {
+    answers: [
+      { id: "strategy", selected: ["balanced"] },
+      { id: "dryRun", selected: ["是"] },
+    ],
+  });
+  const reply = child.frames.find((frame) => frame.id === "elicitation-1" && frame.result);
+  assert.deepEqual(reply.result, { action: "accept", content: { strategy: "balanced", dryRun: true } });
+
+  await assert.rejects(
+    adapter.resolveInput(handle, requested.payload.requestId, { answers: [] }),
+    /missing or already answered/,
+  );
+});
+
+test("a required ACP field or a URL elicitation is refused instead of hanging", async () => {
+  let child;
+  const adapter = new DeepSeekHarnessAdapter({
+    probe: async () => ({ available: true, version: "test" }),
+    spawnProcess: () => {
+      child = new FakeAcpChild();
+      return child;
+    },
+  });
+  const handle = await adapter.start({ cwd: "D:\\work" });
+  const events = [];
+  handle.emit = async (kind, payload) => events.push({ kind, payload });
+
+  child.stdout.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id: "elicitation-2",
+    method: "elicitation/create",
+    params: {
+      sessionId: "dsh-session-1",
+      mode: "form",
+      message: "Pick a branch",
+      requestedSchema: { type: "object", properties: { branch: { type: "string", title: "Branch" } }, required: ["branch"] },
+    },
+  })}\n`);
+  // Only form mode is advertised, so a URL hand-off must be declined at once.
+  child.stdout.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id: "elicitation-url",
+    method: "elicitation/create",
+    params: { requestId: 12, mode: "url", elicitationId: "oauth-1", url: "https://example.com/connect", message: "Authorize" },
+  })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const urlReply = child.frames.find((frame) => frame.id === "elicitation-url" && frame.result);
+  assert.deepEqual(urlReply.result, { action: "decline" });
+
+  const requested = events.find((event) => event.kind === "input.requested");
+  await assert.rejects(
+    adapter.resolveInput(handle, requested.payload.requestId, { answers: [] }),
+    /requires an answer/,
+  );
+  await adapter.resolveInput(handle, requested.payload.requestId, { answers: [], cancel: true });
+  const decline = child.frames.find((frame) => frame.id === "elicitation-2" && frame.result);
+  assert.deepEqual(decline.result, { action: "decline" });
+});

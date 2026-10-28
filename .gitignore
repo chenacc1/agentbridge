@@ -16,4 +16,20 @@ CONTEXT.md
 _research/
 _research_src/
 docs/reviews/
+docs/team/
 docs/architecture/workspace-conversation-control-plane-implementation-plan.md
+
+# Video production, storyboard, and promo assets are not part of the software.
+video/
+docs/*.zip
+docs/assets/*/
+docs/assets/*.zip
+docs/agentbridge-director/
+docs/agentbridge-motion/
+docs/agentbridge-organic-motion/
+docs/agentbridge-satin-storyboard/
+docs/AgentBridge-视频镜头大纲.md
+docs/AgentBridge-讲解视频分镜文稿表.md
+docs/assets/act3-recording-plan.md
+docs/assets/storyboard-style-reference.png
+scripts/capture-*.mjs

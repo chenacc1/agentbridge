@@ -24,6 +24,83 @@ function toolSummary(update) {
   };
 }
 
+function clipped(value, limit) {
+  return typeof value === "string" ? value.slice(0, limit) : "";
+}
+
+/**
+ * Project an ACP `elicitation/create` form schema onto the phone shape.
+ *
+ * ACP form schemas are flat objects of primitive or enum properties, so each
+ * property becomes one question: enums become options, everything else becomes
+ * a text field. `message` is the agent's own overall prompt and rides along on
+ * every question, because the phone card has no separate place for it.
+ */
+export function elicitationQuestions(params) {
+  const schema = params?.requestedSchema;
+  const properties = schema && typeof schema.properties === "object" && schema.properties ? schema.properties : {};
+  const message = clipped(params?.message, 2_000);
+  const required = new Set(Array.isArray(schema?.required) ? schema.required.map(String) : []);
+  return Object.entries(properties).slice(0, 10).flatMap(([key, property]) => {
+    if (!property || typeof property !== "object") return [];
+    const enumValues = Array.isArray(property.enum)
+      ? property.enum.slice(0, 12).map((value) => String(value))
+      : Array.isArray(property.items?.enum)
+        ? property.items.enum.slice(0, 12).map((value) => String(value))
+        : [];
+    const names = Array.isArray(property.enumNames) ? property.enumNames.map((value) => String(value)) : [];
+    const options = enumValues.map((value, index) => ({ label: value, ...(names[index] ? { description: clipped(names[index], 200) } : {}) }));
+    if (property.type === "boolean") {
+      options.length = 0;
+      options.push({ label: "是" }, { label: "否" });
+    }
+    const title = clipped(property.title, 200) || key;
+    const description = clipped(property.description, 500);
+    return [{
+      id: key,
+      header: title,
+      question: [message, description].filter(Boolean).join(" · ") || title,
+      ...(options.length ? { options } : {}),
+      ...(property.type === "array" ? { multiSelect: true } : {}),
+    }];
+  });
+}
+
+/**
+ * Convert the phone's answer batch into an ACP `accept` content object.
+ *
+ * Values are typed from the schema rather than trusted as strings: an ACP agent
+ * validates `content` again, and a "true" that stays a string fails its check.
+ */
+export function elicitationContent(params, answers) {
+  const properties = params?.requestedSchema?.properties ?? {};
+  const required = new Set(Array.isArray(params?.requestedSchema?.required) ? params.requestedSchema.required.map(String) : []);
+  const byId = new Map((Array.isArray(answers) ? answers : []).map((answer) => [answer.id, answer]));
+  const content = {};
+  for (const [key, property] of Object.entries(properties)) {
+    const answer = byId.get(key) ?? { selected: [] };
+    const selected = Array.isArray(answer.selected) ? answer.selected : [];
+    const custom = String(answer.custom ?? "").trim();
+    const raw = selected[0] ?? custom;
+    if (!selected.length && !custom) {
+      if (required.has(key)) throw Object.assign(new Error(`The agent requires an answer for "${clipped(property?.title, 200) || key}"`), { statusCode: 400, code: "INPUT_ANSWER_INVALID" });
+      continue;
+    }
+    if (property?.type === "boolean") {
+      content[key] = raw === "是" || raw === "true";
+    } else if (property?.type === "array") {
+      content[key] = selected.length ? selected : [custom];
+    } else if (property?.type === "number" || property?.type === "integer") {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) throw Object.assign(new Error(`"${clipped(property?.title, 200) || key}" must be a number`), { statusCode: 400, code: "INPUT_ANSWER_INVALID" });
+      content[key] = property.type === "integer" ? Math.trunc(parsed) : parsed;
+    } else {
+      content[key] = raw;
+    }
+  }
+  return content;
+}
+
 export function acpUpdateToEvent(update) {
   if (update?.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
     return { kind: "message.delta", payload: { role: "assistant", text: update.content.text ?? "" } };
@@ -45,6 +122,7 @@ export class DeepSeekHarnessAdapter {
     discover: false,
     streaming: true,
     approve: true,
+    answer: true,
     resume: true,
     cancel: true,
     selectModel: false,
@@ -103,7 +181,7 @@ export class DeepSeekHarnessAdapter {
     return handle;
   }
 
-  async send(handle, { text, emit }) {
+  async send(handle, { text, attachments = [], emit }) {
     if (handle.closed) throw Object.assign(new Error("DeepSeek Harness ACP process is not running"), { statusCode: 409 });
     if (handle.activeTurnId) throw Object.assign(new Error("DeepSeek Harness is already running a turn"), { statusCode: 409 });
     const turnId = randomUUID();
@@ -113,9 +191,21 @@ export class DeepSeekHarnessAdapter {
     handle.messageStarted = false;
     await emit("turn.started", { adapter: this.id }, { turnId });
     try {
+      const blocks = [];
+      if (text) blocks.push({ type: "text", text });
+      for (const attachment of attachments) {
+        // ACP carries images as their own content block; other files travel as a
+        // path the agent can read, because the protocol has no file block.
+        if (attachment.isImage && attachment.dataBase64) {
+          blocks.push({ type: "image", data: attachment.dataBase64, mimeType: attachment.mimeType });
+        } else {
+          blocks.push({ type: "text", text: `附件 ${attachment.name} 的路径：${attachment.path}` });
+        }
+      }
+      if (!blocks.length) blocks.push({ type: "text", text: "" });
       const result = await this.#request(handle, "session/prompt", {
         sessionId: handle.providerSessionId,
-        prompt: [{ type: "text", text }],
+        prompt: blocks,
       });
       const stopReason = result?.stopReason ?? "end_turn";
       if (handle.messageStarted || handle.messageText) {
@@ -145,9 +235,28 @@ export class DeepSeekHarnessAdapter {
     return true;
   }
 
+  // ACP's answer to "ask the human" is `elicitation/create`; the reply is an
+  // action plus schema-typed content, not a free-form message.
+  async resolveInput(handle, requestId, { answers = [], cancel = false } = {}) {
+    const pending = handle.inputs.get(requestId);
+    if (!pending) throw Object.assign(new Error("This question is missing or already answered"), { statusCode: 409 });
+    if (cancel) {
+      handle.inputs.delete(requestId);
+      this.#send(handle, { jsonrpc: "2.0", id: pending.rpcId, result: { action: "decline" } });
+      return true;
+    }
+    // Content is validated before the request is retired: an unusable answer
+    // must leave the question answerable instead of consuming it.
+    const content = elicitationContent(pending.params, answers);
+    handle.inputs.delete(requestId);
+    this.#send(handle, { jsonrpc: "2.0", id: pending.rpcId, result: { action: "accept", content } });
+    return true;
+  }
+
   async dispose(handle) {
     if (!handle || handle.closed) return;
     handle.closed = true;
+    handle.emit = null;
     handle.child.kill();
   }
 
@@ -165,6 +274,7 @@ export class DeepSeekHarnessAdapter {
       nextRequestId: 1,
       pending: new Map(),
       approvals: new Map(),
+      inputs: new Map(),
       stderr: "",
       messageText: "",
       messageStarted: false,
@@ -185,7 +295,11 @@ export class DeepSeekHarnessAdapter {
     });
     await this.#request(handle, "initialize", {
       protocolVersion: 1,
-      clientCapabilities: {},
+      // ACP requires each elicitation mode to be advertised explicitly, and an
+      // agent must not request a mode the client never offered. Form mode is
+      // what the phone can render; URL mode needs a browser hand-off we do not
+      // provide, so it stays unadvertised.
+      clientCapabilities: { elicitation: { form: {} } },
     });
     return handle;
   }
@@ -238,7 +352,34 @@ export class DeepSeekHarnessAdapter {
   }
 
   #onServerRequest(handle, message) {
-    if (message.method !== "session/request_permission" || !handle.emit) {
+    if (!handle.emit) {
+      this.#send(handle, { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Unsupported client request" } });
+      return;
+    }
+    if (message.method === "elicitation/create") {
+      const params = message.params ?? {};
+      if (params.mode !== "form") {
+        // Only form mode is advertised, so a URL-mode request is declined rather
+        // than left pending: there is no browser to hand off to from the phone.
+        this.#send(handle, { jsonrpc: "2.0", id: message.id, result: { action: "decline" } });
+        return;
+      }
+      const questions = elicitationQuestions(params);
+      if (!questions.length) {
+        this.#send(handle, { jsonrpc: "2.0", id: message.id, result: { action: "decline" } });
+        return;
+      }
+      const requestId = randomUUID();
+      handle.inputs.set(requestId, { rpcId: message.id, params });
+      void handle.emit("input.requested", {
+        requestId,
+        adapter: this.id,
+        questions,
+        expiresAt: Date.now() + 30 * 60_000,
+      }, { turnId: handle.activeTurnId });
+      return;
+    }
+    if (message.method !== "session/request_permission") {
       this.#send(handle, { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Unsupported client request" } });
       return;
     }

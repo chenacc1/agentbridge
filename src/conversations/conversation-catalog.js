@@ -89,6 +89,7 @@ export class ConversationCatalog {
       resumable: input.resumable === true,
       attached: input.attached === true,
       lastError: input.lastError ?? null,
+      modelDirectory: input.modelDirectory ?? null,
       lastActiveAt: input.lastActiveAt ?? timestamp,
       createdAt: input.createdAt ?? timestamp,
       updatedAt: timestamp,
@@ -212,9 +213,50 @@ export class ConversationCatalog {
       resumable: input.resumable === true,
       attached: input.attached === true,
       lastError: typeof input.lastError === "string" ? input.lastError.slice(-2000) : null,
+      modelDirectory: this.#validateModelDirectory(input.modelDirectory),
       lastActiveAt: validTimestamp(input.lastActiveAt, validTimestamp(input.updatedAt, this.now())),
       createdAt: validTimestamp(input.createdAt, this.now()),
       updatedAt: validTimestamp(input.updatedAt, validTimestamp(input.createdAt, this.now())),
+    };
+  }
+
+  // Persisted so a conversation whose Agent is offline still describes the model
+  // it was last on. Shape check only: the session manager writes a compact form
+  // and a hand-edited catalog must not be able to blow it up.
+  #validateModelDirectory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const groups = Array.isArray(value.groups) ? value.groups : [];
+    const current = value.current && typeof value.current === "object" ? value.current : null;
+    const failures = Array.isArray(value.failures) ? value.failures : [];
+    if (!groups.length && !current && !failures.length) return null;
+    return {
+      current: current
+        ? {
+          provider: String(current.provider ?? "").slice(0, 100),
+          model: String(current.model ?? "").slice(0, 160),
+          ...(typeof current.reasoningEffort === "string" ? { reasoningEffort: current.reasoningEffort.slice(0, 100) } : {}),
+        }
+        : null,
+      routable: value.routable === true,
+      groups: groups.slice(0, 20).map((group) => ({
+        id: String(group?.id ?? "").slice(0, 100),
+        name: String(group?.name ?? group?.id ?? "").slice(0, 160),
+        models: (Array.isArray(group?.models) ? group.models : []).slice(0, 40).map((model) => ({
+          id: String(model?.id ?? "").slice(0, 160),
+          name: String(model?.name ?? model?.id ?? "").slice(0, 160),
+          ...(Array.isArray(model?.reasoning?.efforts) && model.reasoning.efforts.length
+            ? { reasoning: { efforts: model.reasoning.efforts.slice(0, 8).map((effort) => ({
+              id: String(effort?.id ?? "").slice(0, 100),
+              name: String(effort?.name ?? effort?.id ?? "").slice(0, 160),
+            })) } }
+            : {}),
+        })).filter((model) => model.id),
+      })).filter((group) => group.id),
+      failures: failures.slice(0, 5).map((failure) => ({
+        id: String(failure?.id ?? "").slice(0, 100),
+        name: String(failure?.name ?? failure?.id ?? "").slice(0, 160),
+        message: String(failure?.message ?? "").slice(0, 300),
+      })),
     };
   }
 

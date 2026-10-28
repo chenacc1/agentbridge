@@ -219,3 +219,120 @@ test("a batch that arrives after a newer one is still accepted exactly once", as
   assert.deepEqual([...texts].sort(), Array.from({ length: 20 }, (_value, index) => `w${index + 1}`).sort());
   assert.equal(new Set(texts).size, 20, "an event was applied twice");
 });
+
+// A question or an approval blocks the turn until a human answers. Before this
+// seam existed the phone showed nothing at all and the run simply stopped.
+test("DSH Desktop forwards a question to the phone and returns the chosen answers", async () => {
+  const channels = new DshDesktopChannelManager();
+  const channel = registration(channels);
+  const adapter = new DshDesktopAdapter({ channels });
+  const emitted = [];
+  const handle = await adapter.attach({
+    emit: async (kind, payload, extra) => emitted.push({ kind, payload, extra }),
+  }, channel.providerSessionId);
+
+  const handled = await channels.ingestInteractions(channel.id, channel.token, [{
+    kind: "question-requested",
+    requestId: "dsh-rpc-question-1",
+    questions: [{
+      id: "mode",
+      header: "Choose Mode",
+      question: "Which storage should I use?",
+      options: [{ label: "SQLite", description: "single file" }, { label: "Postgres" }],
+      multiSelect: false,
+    }],
+  }]);
+
+  assert.equal(handled.handled, 1);
+  const requested = emitted.find((event) => event.kind === "input.requested");
+  assert.ok(requested, "the phone was never told about the question");
+  assert.equal(requested.payload.questions[0].question, "Which storage should I use?");
+  assert.deepEqual(requested.payload.questions[0].options.map((option) => option.label), ["SQLite", "Postgres"]);
+
+  const answering = adapter.resolveInput(handle, requested.payload.requestId, {
+    answers: [{ id: "mode", selected: ["SQLite"] }],
+  });
+  const command = channels.poll(channel.id, channel.token, 0).commands.at(-1);
+  assert.equal(command.kind, "answer-question");
+  assert.equal(command.rpcId, "dsh-rpc-question-1");
+  assert.deepEqual(command.answers, [{ id: "mode", selected: ["SQLite"] }]);
+  channels.complete(channel.id, channel.token, command.requestId, { ok: true });
+  assert.equal(await answering, true);
+
+  await assert.rejects(
+    adapter.resolveInput(handle, requested.payload.requestId, { answers: [] }),
+    /missing or already answered/,
+  );
+});
+
+test("DSH Desktop skips a question and reports the approval decision as an outcome", async () => {
+  const channels = new DshDesktopChannelManager();
+  const channel = registration(channels);
+  const adapter = new DshDesktopAdapter({ channels });
+  const emitted = [];
+  const handle = await adapter.attach({
+    emit: async (kind, payload) => emitted.push({ kind, payload }),
+  }, channel.providerSessionId);
+
+  await channels.ingestInteractions(channel.id, channel.token, [{
+    kind: "approval-requested",
+    requestId: "dsh-rpc-approval-1",
+    dshApprovalId: "dsh-approval-1",
+    toolName: "bash",
+    reason: "network access",
+  }]);
+  const approval = emitted.find((event) => event.kind === "approval.requested");
+  assert.ok(approval, "the phone was never told about the approval prompt");
+  assert.equal(approval.payload.method, "bash");
+  assert.equal(approval.payload.request.reason, "network access");
+
+  const deciding = adapter.resolveApproval(handle, approval.payload.approvalId, "deny");
+  const command = channels.poll(channel.id, channel.token, 0).commands.at(-1);
+  assert.equal(command.kind, "answer-approval");
+  assert.equal(command.dshApprovalId, "dsh-approval-1");
+  assert.equal(command.outcome, "rejected");
+  channels.complete(channel.id, channel.token, command.requestId, { ok: true });
+  assert.equal(await deciding, true);
+
+  await channels.ingestInteractions(channel.id, channel.token, [{
+    kind: "question-requested",
+    requestId: "dsh-rpc-question-2",
+    questions: [{ id: "confirm", question: "Proceed?", options: [{ label: "yes" }] }],
+  }]);
+  const question = emitted.filter((event) => event.kind === "input.requested").at(-1);
+  const cancelling = adapter.resolveInput(handle, question.payload.requestId, { answers: [], cancel: true });
+  const cancelCommand = channels.poll(channel.id, channel.token, 0).commands.at(-1);
+  assert.equal(cancelCommand.kind, "cancel-question");
+  channels.complete(channel.id, channel.token, cancelCommand.requestId, { ok: true });
+  assert.equal(await cancelling, true);
+});
+
+test("a question answered in the desktop window retires the phone's card", async () => {
+  const channels = new DshDesktopChannelManager();
+  const channel = registration(channels);
+  const adapter = new DshDesktopAdapter({ channels });
+  const emitted = [];
+  const handle = await adapter.attach({
+    emit: async (kind, payload) => emitted.push({ kind, payload }),
+  }, channel.providerSessionId);
+
+  await channels.ingestInteractions(channel.id, channel.token, [{
+    kind: "question-requested",
+    requestId: "dsh-rpc-question-3",
+    questions: [{ id: "confirm", question: "Proceed?" }],
+  }]);
+  const requested = emitted.find((event) => event.kind === "input.requested");
+
+  await channels.ingestInteractions(channel.id, channel.token, [{
+    kind: "question-resolved",
+    requestId: "dsh-rpc-question-3",
+    outcome: "answered",
+  }]);
+  const resolved = emitted.find((event) => event.kind === "input.resolved");
+  assert.deepEqual(resolved.payload, { requestId: requested.payload.requestId, outcome: "desktop" });
+  await assert.rejects(
+    adapter.resolveInput(handle, requested.payload.requestId, { answers: [] }),
+    /missing or already answered/,
+  );
+});
+

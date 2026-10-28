@@ -114,3 +114,90 @@ test("a restart compacts an on-disk delta flood instead of replaying it raw", as
   assert.equal(retained.filter((event) => event.kind === "message.delta").length, 1);
   assert.equal(retained.find((event) => event.kind === "message.delta").payload.text, streamed);
 });
+
+// The replay window is global: one busy conversation evicts a quiet one, and a
+// phone that switches to it used to render an empty transcript because nothing
+// could bring those events back. History is now read per session, from the log
+// once the window has dropped anything.
+test("per-session history survives eviction from the shared replay window", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-history-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "events.jsonl");
+  const store = new EventStore({ filePath, maxMemory: 20 });
+  await store.init();
+  for (let index = 0; index < 5; index += 1) {
+    await store.append("message.completed", { role: "assistant", text: `quiet ${index}` }, { sessionId: "quiet-session" });
+  }
+  for (let index = 0; index < 40; index += 1) {
+    await store.append("tool.completed", { type: "bash", text: `chatty ${index}` }, { sessionId: "busy-session" });
+  }
+
+  // The quiet conversation is fully out of the window now.
+  assert.equal(store.listAfter(0, { sessionId: "quiet-session" }).length, 0);
+
+  const history = await store.readSessionHistory("quiet-session");
+  assert.deepEqual(history.events.map((event) => event.payload.text), ["quiet 0", "quiet 1", "quiet 2", "quiet 3", "quiet 4"]);
+  assert.equal(history.fromLog, true);
+  assert.equal(history.truncated, false);
+  assert.equal(history.lastSeq, history.events.at(-1).seq);
+});
+
+test("per-session history is bounded and coalesces a delta flood", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-history-limit-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "events.jsonl");
+  const store = new EventStore({ filePath, maxMemory: 10 });
+  await store.init();
+  for (let index = 0; index < 30; index += 1) {
+    await store.append("message.delta", { role: "assistant", text: `t${index} `, offset: index * 4 }, { sessionId: "one", turnId: "turn-1" });
+  }
+  for (let index = 0; index < 25; index += 1) {
+    await store.append("tool.completed", { type: "bash", text: `out ${index}` }, { sessionId: "one" });
+  }
+
+  const history = await store.readSessionHistory("one", { limit: 10 });
+  assert.equal(history.events.length, 10);
+  assert.equal(history.truncated, true);
+  // The 30 streamed chunks fold into one event, exactly like the live window.
+  assert.equal(history.events.filter((event) => event.kind === "message.delta").length, 0);
+  assert.ok(history.events.every((event) => event.kind === "tool.completed"));
+});
+
+test("a session with no history anywhere reports an empty page instead of failing", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-history-empty-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new EventStore({ filePath: path.join(directory, "events.jsonl") });
+  await store.init();
+  const history = await store.readSessionHistory("never-seen");
+  assert.deepEqual(history.events, []);
+  assert.equal(history.lastSeq, 0);
+  assert.equal(history.truncated, false);
+});
+
+test("history pages backwards so an older conversation can be walked window by window", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-history-paging-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new EventStore({ filePath: path.join(directory, "events.jsonl") });
+  await store.init();
+  for (let index = 1; index <= 25; index += 1) {
+    await store.append("message.completed", { role: "assistant", text: `m${index}` }, { sessionId: "s1" });
+  }
+
+  const newest = await store.readSessionHistory("s1", { limit: 10 });
+  assert.deepEqual(newest.events.map((event) => event.payload.text), ["m16", "m17", "m18", "m19", "m20", "m21", "m22", "m23", "m24", "m25"]);
+  assert.equal(newest.hasMore, true);
+  assert.equal(newest.oldestSeq, newest.events[0].seq);
+
+  const older = await store.readSessionHistory("s1", { limit: 10, beforeSeq: newest.oldestSeq });
+  assert.deepEqual(older.events.map((event) => event.payload.text), ["m6", "m7", "m8", "m9", "m10", "m11", "m12", "m13", "m14", "m15"]);
+  assert.equal(older.hasMore, true);
+
+  const oldest = await store.readSessionHistory("s1", { limit: 10, beforeSeq: older.oldestSeq });
+  assert.deepEqual(oldest.events.map((event) => event.payload.text), ["m1", "m2", "m3", "m4", "m5"]);
+  assert.equal(oldest.hasMore, false, "the first page must report that nothing precedes it");
+
+  const beyond = await store.readSessionHistory("s1", { limit: 10, beforeSeq: oldest.oldestSeq });
+  assert.deepEqual(beyond.events, []);
+  assert.equal(beyond.hasMore, false);
+  assert.equal(beyond.oldestSeq, null);
+});

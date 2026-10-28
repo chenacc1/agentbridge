@@ -10,6 +10,7 @@ class FakeAppServer extends EventEmitter {
   stdout = new PassThrough();
   stderr = new PassThrough();
   requests = [];
+  writes = [];
   killed = false;
 
   constructor({ threadPages = new Map(), threadListError = null } = {}) {
@@ -24,7 +25,10 @@ class FakeAppServer extends EventEmitter {
         const index = pending.indexOf("\n");
         const line = pending.slice(0, index);
         pending = pending.slice(index + 1);
-        if (line) this.#handle(JSON.parse(line));
+        if (!line) continue;
+        const parsed = JSON.parse(line);
+        this.writes.push(parsed);
+        this.#handle(parsed);
       }
     });
     setImmediate(() => this.emit("spawn"));
@@ -205,4 +209,69 @@ test("Codex adapter reports thread/list protocol mismatches as degraded discover
       && error.diagnostics?.status === "degraded",
   );
   assert.equal(child.killed, true);
+});
+
+// Codex asks the human through `item/tool/requestUserInput`. Answering it with
+// -32601 is what left the phone blank and the turn stalled, so the request must
+// become a phone card and the reply must carry the chosen label back.
+test("Codex requestUserInput becomes a phone question with a real answer", async () => {
+  const child = new FakeAppServer();
+  const adapter = new CodexAdapter({ spawn: () => child, probe: async () => ({ available: true }) });
+  const emitted = [];
+  const handle = await adapter.start({ cwd: process.cwd(), emit: async (kind, payload) => emitted.push({ kind, payload }) });
+
+  child.stdout.write(`${JSON.stringify({
+    id: 99,
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "codex-thread-123",
+      turnId: "turn-123",
+      itemId: "item-1",
+      questions: [{
+        id: "storage",
+        header: "Choose storage",
+        question: "Which database?",
+        options: [{ label: "SQLite", description: "one file" }, { label: "Postgres" }],
+        isOther: true,
+      }],
+    },
+  })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const requested = emitted.find((event) => event.kind === "input.requested");
+  assert.ok(requested, "the question never reached the phone");
+  assert.deepEqual(requested.payload.questions[0].options.map((option) => option.label), ["SQLite", "Postgres"]);
+  assert.equal(requested.payload.questions[0].header, "Choose storage");
+
+  await adapter.resolveInput(handle, requested.payload.requestId, {
+    answers: [{ id: "storage", selected: ["SQLite"] }],
+  });
+  const answer = child.writes.find((message) => message.id === 99 && message.result?.answers);
+  assert.deepEqual(answer.result, { answers: { storage: { answers: ["SQLite"] } } });
+  assert.equal(child.writes.some((message) => message.method === "requestUserInput"), false);
+
+  await assert.rejects(
+    adapter.resolveInput(handle, requested.payload.requestId, { answers: [] }),
+    /missing or already answered/,
+  );
+});
+
+test("a skipped Codex question is answered with an error instead of hanging", async () => {
+  const child = new FakeAppServer();
+  const adapter = new CodexAdapter({ spawn: () => child, probe: async () => ({ available: true }) });
+  const emitted = [];
+  const handle = await adapter.start({ cwd: process.cwd(), emit: async (kind, payload) => emitted.push({ kind, payload }) });
+
+  child.stdout.write(`${JSON.stringify({
+    id: 41,
+    method: "item/tool/requestUserInput",
+    params: { threadId: "codex-thread-123", turnId: "turn-123", itemId: "item-2", questions: [{ id: "go", header: "Confirm", question: "Proceed?" }] },
+  })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const requested = emitted.find((event) => event.kind === "input.requested");
+  await adapter.resolveInput(handle, requested.payload.requestId, { answers: [], cancel: true });
+  const reply = child.writes.find((message) => message.id === 41 && message.error);
+  assert.ok(reply, "a skipped question must be answered, not left pending");
+  assert.match(reply.error.message, /skipped/);
 });

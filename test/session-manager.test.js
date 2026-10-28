@@ -1,8 +1,8 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { EventStore } from "../src/event-store.js";
 import { AdapterRegistry } from "../src/adapter-registry.js";
 import { EchoAdapter } from "../src/adapters/echo.js";
@@ -121,7 +121,7 @@ test("control lease prevents a second device from sending implicitly", async (t)
   const session = await manager.create({ adapterId: "echo", projectAlias: "demo", title: "Demo", commandId: "command-create-3", device: owner });
   await assert.rejects(
     manager.send({ sessionId: session.id, text: "hello", commandId: "command-send-1", device: other }),
-    /Take control first/,
+    /接管输入/,
   );
   await manager.claimControl({ sessionId: session.id, commandId: "command-control-1", device: other, force: true });
   const completed = new Promise((resolve) => {
@@ -167,6 +167,47 @@ test("attaching an existing provider conversation reuses the same bridge session
   assert.equal(first.id, second.id);
   assert.equal(first.providerSessionId, "provider-session-123");
   assert.equal(manager.list().length, 1);
+});
+
+// A DSH Desktop conversation is only drivable while its companion channel is connected.
+// The phone needs that as a fact on the session, so it can say "run /phone on the desktop"
+// instead of opening an input box that fails on the first send.
+test("a desktop-attached session reports whether its companion is connected", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-desktop-online-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const eventStore = new EventStore({ filePath: path.join(directory, "events.jsonl") });
+  await eventStore.init();
+  const online = new Set(["dsh-companion-1"]);
+  const registry = new AdapterRegistry();
+  registry.register(new EchoAdapter());
+  registry.register({
+    id: "deepseek-harness-desktop",
+    label: "DSH Desktop",
+    capabilities: { resume: true },
+    detect: async () => ({ available: true }),
+    channels: { isOnline: (providerSessionId) => online.has(providerSessionId) },
+    attach: async (context, providerSessionId) => ({ providerSessionId, emit: context.emit }),
+  });
+  const manager = new SessionManager({ eventStore, registry, projects: new Map([["desktop", directory]]) });
+  const device = { id: "device-a", deviceName: "A" };
+  const session = await manager.attach({
+    adapterId: "deepseek-harness-desktop",
+    projectAlias: "desktop",
+    providerSessionId: "dsh-companion-1",
+    title: "桌面会话",
+    commandId: "desktop-attach-1",
+    device,
+  });
+  assert.equal(session.desktopConnected, true, "a live companion channel means the phone can drive it");
+
+  // The bridge forgot the channel (a restart): the session is still listed, but nothing
+  // can be sent into it until the desktop side reconnects.
+  online.clear();
+  assert.equal(manager.list().find((item) => item.id === session.id).desktopConnected, false);
+
+  // Every other adapter owns its own process, so the question does not apply to them.
+  const echo = await manager.create({ adapterId: "echo", projectAlias: "desktop", title: "Echo", commandId: "echo-command-1", device });
+  assert.equal(manager.list().find((item) => item.id === echo.id).desktopConnected, null);
 });
 
 test("persisted bridge sessions load offline and resume only when the user sends a message", async (t) => {
@@ -349,6 +390,62 @@ test("turn failures remain visible in the session summary and clear on retry", a
   assert.equal(manager.list().find((item) => item.id === session.id)?.lastError, null);
 });
 
+// An adapter emits through a closure it does not await, so an event that cannot be
+// logged must not become an unhandled rejection: one unwritable log line used to be
+// able to kill a bridge that was happily serving every other conversation.
+test("an event the log cannot record is reported, not thrown back at the adapter", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-log-failure-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let failWrites = false;
+  const eventStore = new EventStore({
+    filePath: path.join(directory, "events.jsonl"),
+    appendFileImpl: async (...args) => {
+      if (failWrites) throw Object.assign(new Error("disk is gone"), { code: "ENOENT" });
+      return appendFile(...args);
+    },
+  });
+  await eventStore.init();
+  const registry = new AdapterRegistry();
+  let adapterEmit = null;
+  registry.register({
+    id: "log-failure",
+    label: "Log Failure",
+    capabilities: {},
+    detect: async () => ({ available: true }),
+    start: async () => ({ providerSessionId: "log-failure-1" }),
+    // The real adapters keep this closure and call it later, without awaiting it.
+    send: async (_handle, { emit }) => {
+      adapterEmit = emit;
+    },
+  });
+  const manager = new SessionManager({ eventStore, registry, projects: new Map([["demo", directory]]) });
+  const device = { id: "device-a", deviceName: "A" };
+  const session = await manager.create({ adapterId: "log-failure", projectAlias: "demo", title: "Log", commandId: "log-create", device });
+  await manager.send({ sessionId: session.id, text: "hello", commandId: "log-send", device });
+
+  const reported = [];
+  const originalError = console.error;
+  console.error = (...args) => reported.push(args.join(" "));
+  t.after(() => { console.error = originalError; });
+  failWrites = true;
+
+  // Fire and forget, exactly like the adapters: this must resolve quietly, not reject.
+  adapterEmit("turn.completed", { status: "completed" }, { turnId: "turn-1" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.ok(reported.some((line) => line.includes("dropped turn.completed")), `expected a reported drop, saw ${JSON.stringify(reported)}`);
+  // The in-memory session still moved on — the drop is a durability loss, not a state
+  // one — but nothing was written, and that is what the phone would have replayed.
+  const logged = async () => (await readFile(path.join(directory, "events.jsonl"), "utf8"))
+    .trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line).kind);
+  assert.equal(manager.list().find((item) => item.id === session.id)?.status, "ready");
+  assert.ok(!(await logged()).includes("turn.completed"), "the failed write must not appear in the log");
+  // The chain recovers on the next write, so a transient outage is not permanent.
+  failWrites = false;
+  await adapterEmit("turn.completed", { status: "completed" }, { turnId: "turn-1" });
+  assert.ok((await logged()).includes("turn.completed"), "the next write must land");
+});
+
 // One request per token is far too many for a phone on a tunnel, and it let
 // token chatter push real messages out of the event window. Deltas are coalesced
 // per turn and addressed by character offset so a client can fold them safely.
@@ -464,4 +561,169 @@ test("a new turn starts a fresh delta chain", async (t) => {
   assert.equal(deltas.length, 2, "each turn must keep its own delta chain");
   assert.deepEqual(deltas.map((delta) => delta.payload.offset), [0, 0]);
   assert.deepEqual(deltas.map((delta) => delta.payload.text), ["hello again", "hello again"]);
+});
+
+// A question is a different barrier from a stop request: the turn keeps running
+// while it waits, so the phone must be able to answer it back into the same run.
+test("a pending question is answered through the adapter and reported once", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-question-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const eventStore = new EventStore({ filePath: path.join(directory, "events.jsonl") });
+  await eventStore.init();
+  const registry = new AdapterRegistry();
+  const answered = [];
+  registry.register({
+    id: "asks",
+    label: "Asks",
+    capabilities: { create: true, answer: true },
+    async detect() { return { available: true }; },
+    async start() { return { providerSessionId: "asks-1" }; },
+    async send(_handle, { emit }) {
+      await emit("turn.started", { adapter: "asks" }, { turnId: "ask-turn" });
+      await emit("input.requested", {
+        requestId: "question-1",
+        adapter: "asks",
+        questions: [{ id: "mode", question: "Which storage?", options: [{ label: "SQLite" }, { label: "Postgres" }] }],
+      }, { turnId: "ask-turn" });
+    },
+    async resolveInput(_handle, requestId, payload) {
+      answered.push({ requestId, ...payload });
+      return true;
+    },
+  });
+  const manager = new SessionManager({ eventStore, registry, projects: new Map([["demo", directory]]), deltaFlushMs: 5 });
+  const device = { id: "device-a", deviceName: "A" };
+  const session = await manager.create({ adapterId: "asks", projectAlias: "demo", title: "Asks", commandId: "asks-create", device });
+  // `send` drives the adapter in the background, so the question is awaited
+  // through the store instead of being read back immediately after the call.
+  const requested = new Promise((resolve) => {
+    const unsubscribe = eventStore.subscribe((event) => {
+      if (event.kind !== "input.requested") return;
+      unsubscribe();
+      resolve(event);
+    });
+  });
+  await manager.send({ sessionId: session.id, text: "go", commandId: "asks-send-1", device });
+  assert.ok(await requested, "the question was never published to the phone");
+
+  await assert.rejects(
+    manager.resolveInput({ requestId: "question-1", answers: [{ id: "mode", selected: ["MySQL"] }], commandId: "asks-answer-bad", device }),
+    (error) => error.statusCode === 400 && error.code === "INPUT_ANSWER_INVALID",
+  );
+  await assert.rejects(
+    manager.resolveInput({ requestId: "question-1", answers: [{ id: "mode", selected: ["SQLite"], custom: "and a note" }], commandId: "asks-answer-both", device }),
+    /either an option or free text/,
+  );
+
+  const result = await manager.resolveInput({
+    requestId: "question-1",
+    answers: [{ id: "mode", selected: ["SQLite"] }],
+    commandId: "asks-answer-1",
+    device,
+  });
+  assert.deepEqual(result, { requestId: "question-1", outcome: "answered" });
+  assert.deepEqual(answered, [{ requestId: "question-1", answers: [{ id: "mode", selected: ["SQLite"] }], cancel: false }]);
+  assert.equal(eventStore.listAfter(0, { sessionId: session.id }).filter((event) => event.kind === "input.resolved").length, 1);
+
+  await assert.rejects(
+    manager.resolveInput({ requestId: "question-1", answers: [], commandId: "asks-answer-2", device }),
+    (error) => error.statusCode === 409,
+  );
+});
+
+test("an unanswered question is dropped when its turn ends", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-question-drop-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const eventStore = new EventStore({ filePath: path.join(directory, "events.jsonl") });
+  await eventStore.init();
+  const registry = new AdapterRegistry();
+  registry.register({
+    id: "asks-then-ends",
+    label: "Asks then ends",
+    capabilities: { create: true, answer: true },
+    async detect() { return { available: true }; },
+    async start() { return { providerSessionId: "asks-then-ends-1" }; },
+    async send(_handle, { emit }) {
+      await emit("turn.started", { adapter: "asks-then-ends" }, { turnId: "short-turn" });
+      await emit("input.requested", {
+        requestId: "question-2",
+        adapter: "asks-then-ends",
+        questions: [{ id: "go", question: "Proceed?" }],
+      }, { turnId: "short-turn" });
+      await emit("turn.completed", { status: "cancelled" }, { turnId: "short-turn" });
+    },
+    async resolveInput() { throw new Error("a question from a finished turn must not be answerable"); },
+  });
+  const manager = new SessionManager({ eventStore, registry, projects: new Map([["demo", directory]]), deltaFlushMs: 5 });
+  const device = { id: "device-a", deviceName: "A" };
+  const session = await manager.create({ adapterId: "asks-then-ends", projectAlias: "demo", title: "Short", commandId: "short-create", device });
+  const finished = new Promise((resolve) => {
+    const unsubscribe = eventStore.subscribe((event) => {
+      if (event.kind !== "turn.completed") return;
+      unsubscribe();
+      resolve(event);
+    });
+  });
+  await manager.send({ sessionId: session.id, text: "go", commandId: "short-send-1", device });
+  await finished;
+
+  await assert.rejects(
+    manager.resolveInput({ requestId: "question-2", answers: [{ id: "go", selected: [] }], commandId: "short-answer-1", device }),
+    (error) => error.statusCode === 409,
+  );
+});
+
+// A phone re-reads this stream on every load, so what a status event carries is
+// a latency cost. `session.ready` used to embed the whole model directory.
+test("status events stay small and never repeat the model directory", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-payload-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const eventStore = new EventStore({ filePath: path.join(directory, "events.jsonl") });
+  await eventStore.init();
+  const registry = new AdapterRegistry();
+  const directoryGroups = Array.from({ length: 60 }, (_value, index) => ({
+    id: `provider-${index}`,
+    name: `Provider ${index}`,
+    models: Array.from({ length: 8 }, (_entry, model) => ({ id: `model-${index}-${model}`, name: `Model ${index}-${model}` })),
+  }));
+  registry.register({
+    id: "fattened",
+    label: "Fattened",
+    capabilities: { create: true },
+    async detect() { return { available: true }; },
+    async start() { return { providerSessionId: "fattened-1", modelDirectory: { current: null, groups: directoryGroups, failures: [] } }; },
+    modelDirectory() { return { current: null, groups: directoryGroups, failures: [] }; },
+    async send(_handle, { emit }) {
+      await emit("tool.started", { type: "bash", command: "x".repeat(50_000) }, { turnId: "turn-1" });
+      await emit("tool.completed", { type: "bash", text: "y".repeat(50_000) }, { turnId: "turn-1" });
+      await emit("turn.completed", { status: "completed" }, { turnId: "turn-1" });
+    },
+  });
+  const manager = new SessionManager({ eventStore, registry, projects: new Map([["demo", directory]]), deltaFlushMs: 5 });
+  const device = { id: "device-a", deviceName: "A" };
+  const session = await manager.create({ adapterId: "fattened", projectAlias: "demo", title: "Fat", commandId: "fat-create", device });
+  // /api/state still needs the catalog; only the event stream drops it.
+  assert.equal(manager.get(session.id).modelDirectory.groups.length, 60);
+
+  const finished = new Promise((resolve) => {
+    const unsubscribe = eventStore.subscribe((event) => {
+      if (event.kind !== "turn.completed") return;
+      unsubscribe();
+      resolve();
+    });
+  });
+  await manager.send({ sessionId: session.id, text: "go", commandId: "fat-send-1", device });
+  await finished;
+
+  const ready = eventStore.listAfter(0, { sessionId: session.id }).find((event) => event.kind === "session.ready");
+  assert.equal("session" in ready.payload, false, "the ready event repeated the whole session view");
+  assert.equal(ready.payload.sessionId, session.id);
+  assert.ok(Buffer.byteLength(JSON.stringify(ready), "utf8") < 1_000);
+
+  const started = eventStore.listAfter(0, { sessionId: session.id }).find((event) => event.kind === "tool.started");
+  assert.ok(started.payload.command.length < 2_100);
+  assert.match(started.payload.command, /已截断/);
+  const completed = eventStore.listAfter(0, { sessionId: session.id }).find((event) => event.kind === "tool.completed");
+  assert.ok(completed.payload.text.length < 4_100);
+  assert.match(completed.payload.text, /已截断/);
 });

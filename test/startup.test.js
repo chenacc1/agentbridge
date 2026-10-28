@@ -26,3 +26,17 @@ test("Windows launcher health-checks, prevents duplicate starts, and waits for r
   assert.match(shortcut, /start-agentbridge\.ps1/i);
   assert.match(remoteShortcut, /-Tailscale/i);
 });
+
+test("Windows safe-stop entry uses the authenticated local shutdown API and never force-kills", async () => {
+  const stopper = await readFile(new URL("../scripts/stop-agentbridge.ps1", import.meta.url), "utf8");
+  const shortcut = await readFile(new URL("../安全停止 AgentBridge.cmd", import.meta.url), "utf8");
+
+  assert.match(stopper, /api\/local-session/);
+  assert.match(stopper, /api\/local\/shutdown/);
+  assert.match(stopper, /ACTIVE_SESSIONS/);
+  assert.match(stopper, /Get-NetTCPConnection/);
+  assert.match(stopper, /src\\server\.js/);
+  assert.doesNotMatch(stopper, /Stop-Process|taskkill/i);
+  assert.match(shortcut, /stop-agentbridge\.ps1/i);
+  assert.match(shortcut, /--no-pause/i);
+});

@@ -57,8 +57,115 @@ function normalizeModelDirectory(value) {
 export class DshDesktopChannelManager {
   #byProvider = new Map();
   #byChannel = new Map();
+  // Pending "create a conversation in the desktop app" requests, keyed by the
+  // bridge session id the phone already opened. The desktop companion answers by
+  // registering that new conversation, which is what resolves the entry.
+  #creates = new Map();
+  #createRequests = new Map();
 
-  register({ providerSessionId, cwd, title, provider, model, modelDirectory }) {
+  /**
+   * Is any DSH Desktop conversation currently paired?
+   *
+   * Creating a conversation from the phone has to happen inside the desktop app,
+   * so the capability is only real while a companion is polling.
+   */
+  hasOnlineChannel() {
+    for (const state of this.#byProvider.values()) {
+      if (state.channelId && !state.closed) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Is *this* conversation's companion connected right now?
+   *
+   * A DSH Desktop conversation only exists inside the desktop app, so without its
+   * channel there is nothing to drive. The phone needs to know that before it offers
+   * an input box, rather than after the user has typed into it.
+   */
+  isOnline(providerSessionId) {
+    if (typeof providerSessionId !== "string" || !providerSessionId) return false;
+    const state = this.#byProvider.get(providerSessionId);
+    return Boolean(state && !state.closed && state.channelId);
+  }
+
+  /**
+   * Ask a paired desktop conversation to open a new conversation in `cwd`.
+   *
+   * Resolves with the new provider session id once the companion registers it,
+   * so the caller can bind the bridge session it already created. The request
+   * rides an existing channel: the companion owns its own DSH context and can
+   * create conversations independently of which one is paired.
+   */
+  requestSession({ cwd, title, bridgeSessionId, timeoutMs = 45_000 }) {
+    if (typeof bridgeSessionId !== "string" || !bridgeSessionId) {
+      throw httpError("A bridge session id is required to create a DSH Desktop conversation", 400);
+    }
+    let carrier = null;
+    for (const state of this.#byProvider.values()) {
+      if (state.channelId && !state.closed) {
+        if (!carrier || state.lastSeenAt > carrier.lastSeenAt) carrier = state;
+      }
+    }
+    if (!carrier) {
+      throw httpError("DSH Desktop 桌面端离线：请先在 DSH Desktop 的对话里运行 /phone，再回来新建", 409);
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#creates.delete(bridgeSessionId);
+        this.#createRequests.delete(requestId);
+        reject(httpError("DSH Desktop 没能在超时前创建会话", 504));
+      }, timeoutMs);
+      this.#creates.set(bridgeSessionId, { resolve, reject, timer, requestId, cwd });
+      this.#createRequests.set(requestId, bridgeSessionId);
+      this.enqueue(carrier.providerSessionId, {
+        kind: "create-session",
+        requestId,
+        bridgeSessionId,
+        cwd,
+        ...(title ? { title } : {}),
+      });
+    });
+  }
+
+  /** The companion registered the conversation it just created. */
+  settleCreate(bridgeSessionId, value) {
+    const pending = this.#creates.get(bridgeSessionId);
+    if (!pending) return false;
+    this.#creates.delete(bridgeSessionId);
+    this.#createRequests.delete(pending.requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(value);
+    return true;
+  }
+
+  /** The companion gave up: surface its reason instead of waiting for the timeout. */
+  failCreate(bridgeSessionId, message) {
+    const pending = this.#creates.get(bridgeSessionId);
+    if (!pending) return false;
+    this.#creates.delete(bridgeSessionId);
+    this.#createRequests.delete(pending.requestId);
+    clearTimeout(pending.timer);
+    pending.reject(httpError(String(message ?? "DSH Desktop 创建会话失败").slice(0, 500), 409));
+    return true;
+  }
+
+  /** A create result arrives on the carrier channel, not on the session it creates. */
+  #completeCreate(requestId, result) {
+    const bridgeSessionId = this.#createRequests.get(requestId);
+    if (!bridgeSessionId) return false;
+    if (result?.ok) {
+      // Success is completed by the registration of the new conversation, which
+      // carries the provider session id the bridge has to bind.
+      return true;
+    }
+    this.#createRequests.delete(requestId);
+    this.failCreate(bridgeSessionId, result?.error);
+    return true;
+  }
+
+  register({ providerSessionId, cwd, title, provider, model, modelDirectory, integrationVersion = 0 }) {
     let state = this.#byProvider.get(providerSessionId);
     if (!state) {
       state = {
@@ -88,6 +195,7 @@ export class DshDesktopChannelManager {
     state.provider = provider || null;
     state.model = model || null;
     state.modelDirectory = normalizeModelDirectory(modelDirectory);
+    state.integrationVersion = Number.isSafeInteger(integrationVersion) ? integrationVersion : 0;
     state.commands = [];
     state.nextCommandSeq = 0;
     state.registeredAt = Date.now();
@@ -123,11 +231,34 @@ export class DshDesktopChannelManager {
 
   attachBridge(providerSessionId, bridge) {
     const state = this.#byProvider.get(providerSessionId);
-    if (!state || state.closed) throw httpError("DSH Desktop companion is not registered", 409);
+    // This is what the phone used to read as "DSH Desktop companion is not registered",
+    // which said nothing about what to do. A DSH Desktop conversation is driven through
+    // the desktop app, so the one action that fixes it is running /phone there — and the
+    // companion reconnects by itself once it is running the current integration.
+    if (!state || state.closed) {
+      throw httpError("桌面端没有连上这个会话：请在这台电脑的 DSH Desktop 里打开该会话并执行 /phone（桌面端已在运行的话，几秒后会自动接回）", 409);
+    }
     state.bridge = bridge;
     return state;
   }
-
+  /**
+   * What the paired companions reported about themselves.
+   *
+   * `stale` means a desktop is running an older copy of the integration than this
+   * bridge expects — the fix is `npm run install:dsh-phone` plus a DSH restart, which
+   * is worth telling the user before they debug a missing feature.
+   */
+  integrationStatus({ required = 5 } = {}) {
+    const versions = [];
+    for (const state of this.#byProvider.values()) {
+      if (state.channelId && !state.closed && Number.isSafeInteger(state.integrationVersion)) {
+        versions.push(state.integrationVersion);
+      }
+    }
+    if (!versions.length) return { paired: false, version: null, required, stale: false };
+    const version = Math.min(...versions);
+    return { paired: true, version, required, stale: version < required };
+  }
   metadata(providerSessionId) {
     const state = this.#byProvider.get(providerSessionId);
     if (!state) return null;
@@ -144,7 +275,7 @@ export class DshDesktopChannelManager {
   enqueue(providerSessionId, command) {
     const state = this.#byProvider.get(providerSessionId);
     if (!state || state.closed || !state.channelId) {
-      throw httpError("DSH Desktop /phone connection is offline; run /phone again in that conversation", 409);
+      throw httpError("桌面端这个会话还没连上：请在这台电脑的 DSH Desktop 里打开该会话执行 /phone", 409);
     }
     const queued = {
       seq: ++state.nextCommandSeq,
@@ -158,7 +289,7 @@ export class DshDesktopChannelManager {
   request(providerSessionId, command, timeoutMs = 15_000) {
     const state = this.#byProvider.get(providerSessionId);
     if (!state || state.closed || !state.channelId) {
-      throw httpError("DSH Desktop /phone connection is offline; run /phone again in that conversation", 409);
+      throw httpError("桌面端这个会话还没连上：请在这台电脑的 DSH Desktop 里打开该会话执行 /phone", 409);
     }
     const requestId = randomUUID();
     const queued = this.enqueue(providerSessionId, { ...command, requestId });
@@ -166,7 +297,8 @@ export class DshDesktopChannelManager {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         state.requests?.delete(requestId);
-        reject(httpError("DSH Desktop did not confirm the model change in time", 504));
+        const what = command.kind === "select-model" ? "the model change" : "your answer";
+        reject(httpError(`DSH Desktop did not confirm ${what} in time`, 504));
       }, timeoutMs);
       state.requests.set(requestId, { resolve, reject, timer, command: queued });
     });
@@ -174,17 +306,28 @@ export class DshDesktopChannelManager {
 
   complete(channelId, token, requestId, result) {
     const state = this.#authenticate(channelId, token);
+    state.lastSeenAt = Date.now();
+    if (!state.requests?.has(requestId) && this.#completeCreate(requestId, result)) {
+      // A create request is answered on the carrier channel while the session it
+      // creates belongs to another one; only a failure is meaningful here.
+      return { accepted: true };
+    }
     const pending = state.requests?.get(requestId);
     if (!pending) throw httpError("Unknown or expired DSH Desktop request", 409);
     clearTimeout(pending.timer);
     state.requests.delete(requestId);
-    state.lastSeenAt = Date.now();
     if (!result?.ok) {
-      pending.reject(httpError(String(result?.error ?? "DSH Desktop rejected the model change").slice(0, 500), 409));
+      pending.reject(httpError(String(result?.error ?? "DSH Desktop rejected the request").slice(0, 500), 409));
+      return { accepted: true };
+    }
+    if (pending.command.kind !== "select-model") {
+      // Answers to a question or an approval are confirmed only in the sense
+      // that the desktop accepted them; there is no value to fold back in.
+      pending.resolve({ accepted: true });
       return { accepted: true };
     }
     const selected = normalizeSelection(result.selected);
-    if (pending.command.kind !== "select-model" || !selected) {
+    if (!selected) {
       pending.reject(httpError("Invalid DSH Desktop model response", 502));
       return { accepted: true };
     }
@@ -219,6 +362,31 @@ export class DshDesktopChannelManager {
     const run = state.ingestChain.catch(() => undefined).then(() => this.#applyRecords(state, records));
     state.ingestChain = run;
     return run;
+  }
+
+  /**
+   * Deliver human-interaction frames (questions and approvals) from the desktop
+   * companion.
+   *
+   * These are not session events: DSH mints a fresh rpc id for each pending
+   * interaction, and that id is not part of the durable log, so they travel on
+   * their own channel instead of sharing the seq-deduplicated event stream.
+   */
+  async ingestInteractions(channelId, token, interactions) {
+    const state = this.#authenticate(channelId, token);
+    if (!Array.isArray(interactions) || interactions.length > 50) {
+      throw httpError("interactions must be an array containing at most 50 items", 400);
+    }
+    if (!state.bridge?.onInteraction) throw httpError("Bridge session is not ready", 409);
+    state.lastSeenAt = Date.now();
+    let handled = 0;
+    for (const interaction of interactions) {
+      if (!interaction || typeof interaction.kind !== "string" || typeof interaction.requestId !== "string") continue;
+      if (!interaction.requestId) continue;
+      await state.bridge.onInteraction(interaction);
+      handled += 1;
+    }
+    return { handled };
   }
 
   async #applyRecords(state, records) {

@@ -67,8 +67,38 @@ function unixSecondsToIso(value) {
   return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
 }
 
-function discoveredConversation(thread, workspacePath) {
-  if (!thread || typeof thread.id !== "string" || !thread.id) return null;
+/**
+ * Project Codex's `item/tool/requestUserInput` questions onto the phone shape.
+ *
+ * Codex answers with one string array per question id, so each question stays
+ * single-choice: `isOther` is what lets the phone contribute free text instead
+ * of a listed option.
+ */
+function userInputQuestions(params) {
+  const questions = Array.isArray(params?.questions) ? params.questions.slice(0, 10) : [];
+  return questions.flatMap((question, index) => {
+    if (!question || typeof question !== "object") return [];
+    const prompt = String(question.question ?? "").slice(0, 4000);
+    if (!prompt) return [];
+    const options = Array.isArray(question.options)
+      ? question.options.slice(0, 25).flatMap((option) => {
+        const label = String(option?.label ?? "").slice(0, 200);
+        if (!label) return [];
+        const description = String(option?.description ?? "").slice(0, 500);
+        return [{ label, ...(description ? { description } : {}) }];
+      })
+      : [];
+    return [{
+      id: String(question.id ?? `q${index + 1}`).slice(0, 100),
+      question: prompt,
+      ...(question.header ? { header: String(question.header).slice(0, 200) } : {}),
+      ...(options.length ? { options } : {}),
+      ...(question.isSecret === true ? { secret: true } : {}),
+    }];
+  });
+}
+
+function discoveredConversation(thread, workspacePath) {  if (!thread || typeof thread.id !== "string" || !thread.id) return null;
   if (typeof thread.cwd !== "string" || pathKey(thread.cwd) !== pathKey(workspacePath)) return null;
   const title = String(thread.name || thread.preview || "Codex conversation").trim().slice(0, 100) || "Codex conversation";
   const createdAt = unixSecondsToIso(thread.createdAt);
@@ -90,6 +120,7 @@ export class CodexAdapter {
     discover: true,
     streaming: true,
     approve: true,
+    answer: true,
     resume: true,
     cancel: true,
     selectModel: true,
@@ -218,6 +249,10 @@ export class CodexAdapter {
       nextRequestId: 1,
       pending: new Map(),
       approvals: new Map(),
+      inputs: new Map(),
+      // Set at connect time as well as in `send`, because Codex can ask the
+      // human a question before a turn ever starts.
+      emit: context.emit ?? null,
       stderr: "",
       closed: false,
       modelDirectory: null,
@@ -250,12 +285,17 @@ export class CodexAdapter {
     return handle;
   }
 
-  async send(handle, { text, emit, commandId }) {
+  async send(handle, { text, attachments = [], emit, commandId }) {
     if (handle.closed) throw Object.assign(new Error("Codex app-server is not running"), { statusCode: 409 });
     handle.emit = emit;
+    // Codex app-server takes text input items only, so an attachment travels as an
+    // absolute path the agent can open itself. The prompt says so explicitly
+    // instead of leaving the model to guess what the stray line means.
+    const attachmentLines = attachments.map((attachment) => `[附件] ${attachment.name} → ${attachment.path}`);
+    const composed = [text, ...attachmentLines].filter(Boolean).join("\n\n");
     const result = await this.#request(handle, "turn/start", {
       threadId: handle.providerSessionId,
-      input: [{ type: "text", text }],
+      input: [{ type: "text", text: composed }],
       clientUserMessageId: commandId,
       ...(handle.selectedModel ? {
         model: handle.selectedModel.model,
@@ -274,8 +314,7 @@ export class CodexAdapter {
     return true;
   }
 
-  async resolveApproval(handle, approvalId, decision) {
-    const approval = handle.approvals.get(approvalId);
+  async resolveApproval(handle, approvalId, decision) {    const approval = handle.approvals.get(approvalId);
     if (!approval) throw Object.assign(new Error("Approval is missing or already resolved"), { statusCode: 409 });
     handle.approvals.delete(approvalId);
     const method = approval.method.toLowerCase();
@@ -293,8 +332,31 @@ export class CodexAdapter {
     return true;
   }
 
+  // Codex answers `requestUserInput` with a map of question id to a string
+  // array. Skipping the question is reported as a JSON-RPC error so the agent
+  // gets a definite answer instead of waiting forever.
+  async resolveInput(handle, requestId, { answers = [], cancel = false } = {}) {
+    const pending = handle.inputs.get(requestId);
+    if (!pending) throw Object.assign(new Error("This question is missing or already answered"), { statusCode: 409 });
+    handle.inputs.delete(requestId);
+    if (cancel) {
+      this.#send(handle, { id: pending.rpcId, error: { code: -32800, message: "the user skipped the question" } });
+      return true;
+    }
+    const byId = new Map(answers.map((answer) => [answer.id, answer]));
+    const result = { answers: {} };
+    for (const question of pending.questions) {
+      const answer = byId.get(question.id) ?? { selected: [] };
+      const custom = String(answer.custom ?? "").trim();
+      result.answers[question.id] = { answers: [...(answer.selected ?? []), ...(custom ? [custom] : [])] };
+    }
+    this.#send(handle, { id: pending.rpcId, result });
+    return true;
+  }
+
   async dispose(handle) {
     if (handle.closed) return;
+    handle.emit = null;
     handle.child.kill();
     handle.closed = true;
   }
@@ -388,7 +450,30 @@ export class CodexAdapter {
 
   #onServerRequest(handle, message) {
     const method = String(message.method);
-    if (!/approval|requestapproval|permissions/i.test(method) || !handle.emit) {
+    if (!handle.emit) {
+      this.#send(handle, { id: message.id, error: { code: -32601, message: "Unsupported client request" } });
+      return;
+    }
+    // A question blocks the turn exactly like an approval does. Before this
+    // branch existed the request was answered with -32601, so the phone showed
+    // nothing and the run stalled on the desktop.
+    if (/requestuserinput|userinput/i.test(method)) {
+      const questions = userInputQuestions(message.params ?? {});
+      if (!questions.length) {
+        this.#send(handle, { id: message.id, result: { answers: {} } });
+        return;
+      }
+      const requestId = randomUUID();
+      handle.inputs.set(requestId, { rpcId: message.id, questions });
+      void handle.emit("input.requested", {
+        requestId,
+        adapter: this.id,
+        questions,
+        expiresAt: Date.now() + 30 * 60_000,
+      });
+      return;
+    }
+    if (!/approval|requestapproval|permissions/i.test(method)) {
       this.#send(handle, { id: message.id, error: { code: -32601, message: "Unsupported client request" } });
       return;
     }

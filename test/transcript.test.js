@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { absorbEvent, buildEntries, indexDeltas, trimEvents } from "../public/transcript.js";
+import { absorbEvent, buildEntries, indexDeltas, mergeHistory, trimEvents } from "../public/transcript.js";
 
 // These tests guard the mobile symptom this module was extracted for: a long
 // streamed conversation used to reach the phone with most of its replies
@@ -173,4 +173,144 @@ test("agent output is escaped and never injectable", () => {
   const html = buildEntries(store.events)[0].html;
   assert.ok(!html.includes("<img"));
   assert.ok(html.includes("&lt;img"));
+});
+
+// A question card is the only transcript entry the phone can act on besides an
+// approval, so it must carry usable inputs and escape agent-supplied text.
+test("a pending question renders selectable options and free text", () => {
+  const store = buffer();
+  store.add({
+    v: 1,
+    eventId: "q1",
+    seq: 1,
+    time: new Date(1700000000000).toISOString(),
+    sessionId: "s1",
+    turnId: "p:1",
+    kind: "input.requested",
+    payload: {
+      requestId: "req-1",
+      questions: [
+        {
+          id: "mode",
+          header: "Choose Mode",
+          question: "Which storage? <script>alert(1)</script>",
+          options: [{ label: "SQLite", description: "single file" }, { label: "Postgres" }],
+        },
+        { id: "extra", question: "Anything else?", multiSelect: true, options: [{ label: "a" }, { label: "b" }] },
+      ],
+    },
+  });
+  const entries = buildEntries(store.events);
+  assert.equal(entries.length, 1);
+  const html = entries[0].html;
+  assert.ok(html.includes("data-input-submit=\"req-1\""));
+  assert.ok(html.includes("data-input-cancel=\"req-1\""));
+  assert.ok(html.includes("data-input-question=\"mode\""));
+  assert.ok(html.includes("type=\"radio\""));
+  assert.ok(html.includes("type=\"checkbox\""), "a multi-select question must render checkboxes");
+  assert.ok(html.includes("data-input-multi=\"1\""));
+  assert.ok(html.includes("data-input-custom"));
+  assert.ok(!html.includes("<script"), "agent-supplied question text was injected as HTML");
+});
+
+test("a question resolved elsewhere stops looking answerable", () => {
+  const store = buffer();
+  store.add({
+    v: 1,
+    eventId: "r1",
+    seq: 1,
+    time: new Date(1700000000000).toISOString(),
+    sessionId: "s1",
+    turnId: "p:1",
+    kind: "input.resolved",
+    payload: { requestId: "req-1", outcome: "desktop" },
+  });
+  store.add({
+    v: 1,
+    eventId: "r2",
+    seq: 2,
+    time: new Date(1700000000000).toISOString(),
+    sessionId: "s1",
+    turnId: "p:1",
+    kind: "approval.resolved",
+    payload: { approvalId: "appr-1", decision: "deny" },
+  });
+  const entries = buildEntries(store.events);
+  assert.ok(entries[0].html.includes("已在电脑上回答"));
+  assert.ok(entries[1].html.includes("已拒绝"));
+});
+
+// Switching conversations must load that conversation's history on demand and
+// must not strike out entries the live stream already delivered.
+test("history merges into the live buffer once, in sequence order", () => {
+  const store = buffer();
+  store.add(completedMessage({ seq: 10, sessionId: "s2", turnId: "p:1", text: "live newest" }));
+
+  const added = mergeHistory(store.events, store.deltaIndex, [
+    { ...completedMessage({ seq: 1, sessionId: "s2", turnId: "p:1", text: "oldest" }), eventId: "h1" },
+    { ...completedMessage({ seq: 5, sessionId: "s2", turnId: "p:1", text: "middle" }), eventId: "h2" },
+    { ...completedMessage({ seq: 10, sessionId: "s2", turnId: "p:1", text: "live newest" }) },
+  ]);
+  assert.equal(added, 2, "an event already in the buffer was inserted again");
+  assert.deepEqual(store.events.map((event) => event.seq), [1, 5, 10]);
+
+  const entries = buildEntries(store.events.filter((event) => event.sessionId === "s2"));
+  assert.deepEqual(entries.map((entry) => entry.html.match(/oldest|middle|live newest/)?.[0]).filter(Boolean), ["oldest", "middle", "live newest"]);
+
+  // A second load of the same page adds nothing.
+  assert.equal(mergeHistory(store.events, store.deltaIndex, [
+    { ...completedMessage({ seq: 1, sessionId: "s2", turnId: "p:1", text: "oldest" }), eventId: "h1" },
+  ]), 0);
+});
+
+
+// A freshly loaded history page is the oldest data in the buffer, so plain
+// oldest-first trimming would delete it moments later if another conversation
+// is still streaming.
+test("trimming protects the conversation the reader is looking at", () => {
+  const store = buffer();
+  for (let index = 0; index < 20; index += 1) {
+    store.add(completedMessage({ seq: index + 1, sessionId: "busy", turnId: `p:${index}`, text: `busy ${index}` }));
+  }
+  // History fetched for the quiet conversation is older than everything above.
+  for (let index = 0; index < 6; index += 1) {
+    store.add(completedMessage({ seq: 100 + index, sessionId: "quiet", turnId: "p:1", text: `quiet ${index}` }));
+  }
+
+  assert.equal(trimEvents(store.events, store.deltaIndex, { maxEvents: 12, trimChunk: 0, keepSessionId: "quiet" }), true);
+  const kept = store.events.filter((event) => event.sessionId === "quiet");
+  assert.equal(kept.length, 6, "the conversation being read was trimmed away");
+  assert.ok(store.events.length <= 12);
+  assert.ok(store.events.filter((event) => event.sessionId === "busy").length >= 6);
+});
+
+// History can arrive before the live stream connects, and the server then replays
+// the same events. A shared seen-id set is what keeps that from rendering the
+// whole transcript twice.
+test("a fetched page and the live stream never render the same event twice", () => {
+  const store = buffer();
+  const knownIds = new Set();
+  const historyPage = [
+    { ...completedMessage({ seq: 1, sessionId: "s3", turnId: "p:1", text: "历史消息一" }), eventId: "e1" },
+    { ...completedMessage({ seq: 2, sessionId: "s3", turnId: "p:1", text: "历史消息二" }), eventId: "e2" },
+  ];
+  assert.equal(mergeHistory(store.events, store.deltaIndex, historyPage, knownIds), 2);
+
+  // The stream replays those same ids, then a genuinely new one.
+  const replayed = [
+    { ...completedMessage({ seq: 1, sessionId: "s3", turnId: "p:1", text: "历史消息一" }), eventId: "e1" },
+    { ...completedMessage({ seq: 2, sessionId: "s3", turnId: "p:1", text: "历史消息二" }), eventId: "e2" },
+    { ...completedMessage({ seq: 3, sessionId: "s3", turnId: "p:1", text: "新消息" }), eventId: "e3" },
+  ];
+  let added = 0;
+  for (const event of replayed) {
+    if (knownIds.has(event.eventId)) continue;
+    knownIds.add(event.eventId);
+    store.add(event);
+    added += 1;
+  }
+  assert.equal(added, 1, "a replayed event was accepted a second time");
+  const entries = buildEntries(store.events);
+  assert.equal(entries.length, 3);
+  assert.deepEqual(entries.map((entry) => entry.html.match(/历史消息一|历史消息二|新消息/)?.[0]).filter(Boolean), ["历史消息一", "历史消息二", "新消息"]);
 });

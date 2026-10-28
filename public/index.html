@@ -11,11 +11,18 @@
   <body>
     <svg class="icon-sprite" aria-hidden="true">
       <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5M18.6 9A7 7 0 0 0 6.4 6.4L4 9m16 6-2.4 2.6A7 7 0 0 1 5.4 15"/></symbol>
+      <symbol id="icon-history" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3 9"/><path d="M3 4.5V9h4.5"/><path d="M12 8v4.5l3 1.8"/></symbol>
       <symbol id="icon-send" viewBox="0 0 24 24"><path d="m4 4 17 8-17 8 3-8-3-8Zm3 8h14"/></symbol>
       <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
       <symbol id="icon-control" viewBox="0 0 24 24"><path d="M8 11V7a2 2 0 1 1 4 0v4-2a2 2 0 1 1 4 0v3-1a2 2 0 1 1 4 0v4c0 4-3 7-7 7h-1c-2 0-3-1-4-2l-4-5a2 2 0 0 1 3-3l1 1"/></symbol>
       <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></symbol>
+      <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></symbol>
       <symbol id="icon-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></symbol>
+      <symbol id="icon-up" viewBox="0 0 24 24"><path d="M5 14.5 12 7l7 7.5"/><path d="M5 19.5 12 12l7 7.5"/></symbol>
+      <symbol id="icon-down" viewBox="0 0 24 24"><path d="M5 9.5 12 17l7-7.5"/><path d="M5 4.5 12 12l7-7.5"/></symbol>
     </svg>
 
     <div id="pairing-screen" class="pairing-screen" hidden>
@@ -40,7 +47,7 @@
       <header class="topbar">
         <a class="brand" href="/" aria-label="AgentBridge 首页">
           <span class="brand-mark">AB</span>
-          <span>AgentBridge</span>
+          <span class="brand-text">AgentBridge</span>
         </a>
         <div class="connection" id="connection-status" role="status">
           <span class="connection-dot"></span>
@@ -48,6 +55,12 @@
         </div>
         <div class="machine-name" id="machine-name">本机</div>
       </header>
+
+      <!-- 抽屉开关在顶栏之外：顶栏的 backdrop-filter 会成为 fixed 子元素的包含块，
+           放进顶栏里它就无法真正固定在视口左上角。 -->
+      <button id="drawer-toggle" class="drawer-toggle" type="button" aria-label="打开会话抽屉" aria-expanded="false" aria-controls="agent-drawer">
+        <svg><use href="#icon-menu"/></svg>
+      </button>
 
       <section id="desktop-pairing" class="pairing-strip" hidden>
         <div class="pairing-copy">
@@ -69,62 +82,51 @@
           <h3>已配对设备</h3>
           <p>手机丢失或不再使用时，在这里撤销它的访问权限。</p>
           <ul id="device-list" class="device-list"></ul>
+          <div class="notify-row" id="integration-row" hidden>
+            <div>
+              <h3>桌面端集成</h3>
+              <p id="integration-note" role="status"></p>
+            </div>
+          </div>
+          <div class="notify-row">
+            <div>
+              <h3>手机通知</h3>
+              <p id="notify-note" role="status">未配置。设置 AGENTBRIDGE_NOTIFY_WEBHOOK 后，Agent 需要批准或跑完时会推送到你的聊天工具。</p>
+            </div>
+            <button id="notify-test" class="secondary-button" type="button" hidden>发送测试</button>
+          </div>
+          <div class="bridge-shutdown">
+            <div>
+              <h3>关闭本机 Bridge</h3>
+              <p id="shutdown-note" role="status">仅关闭 AgentBridge Node 服务，不会关闭 Cloudflare 或 ZeroTier。运行中的任务会阻止关闭。</p>
+            </div>
+            <button id="safe-shutdown" class="danger-button" type="button">
+              <svg><use href="#icon-stop"/></svg><span>安全停止</span>
+            </button>
+          </div>
         </div>
       </section>
 
       <section id="return-entry" class="return-entry" hidden>
         <div>
           <strong>下次从这里继续</strong>
-          <p>在微信右上角“…”中收藏本页；重新打开会自动回到这台手机最近使用的对话。</p>
-          <code id="return-url"></code>
+          <div id="return-details">
+            <p>在微信右上角“…”中收藏本页；重新打开会自动回到这台手机最近使用的对话。</p>
+            <code id="return-url"></code>
+          </div>
         </div>
-        <button id="copy-return-url" class="secondary-button" type="button">复制入口</button>
+        <div class="return-actions">
+          <button id="toggle-return-details" class="text-button" type="button" aria-expanded="false">详情</button>
+          <button id="copy-return-url" class="secondary-button" type="button">复制入口</button>
+        </div>
       </section>
 
       <main class="workspace">
-        <aside class="session-rail" aria-label="工作区与 Agent 会话">
-          <div class="rail-heading">
-            <div>
-              <h1>工作区</h1>
-              <p>先选择电脑上的项目，再进入会话</p>
-            </div>
-          </div>
-
-          <nav id="workspace-list" class="workspace-list" aria-label="电脑工作区"></nav>
-
-          <div class="session-list-heading">
-            <div>
-              <h2 id="workspace-title">会话</h2>
-              <p id="session-count">0 个任务</p>
-            </div>
-            <div class="rail-actions">
-              <button id="discover-conversations" class="history-sync" type="button" hidden>
-                <svg><use href="#icon-refresh"/></svg><span>同步历史</span>
-              </button>
-              <button id="new-session-toggle" class="icon-button" type="button" aria-label="在当前工作区新建会话" aria-expanded="false">
-                <svg><use href="#icon-plus"/></svg>
-              </button>
-            </div>
-          </div>
-          <p id="discovery-note" class="discovery-note">同步历史只读取 Agent 的公开会话列表，不会启动任何对话。</p>
-
-          <form id="new-session-form" class="new-session" hidden>
-            <label>Agent<select id="adapter-select" name="adapterId" required></select></label>
-            <label>工作区<select id="project-select" name="projectAlias" required></select></label>
-            <label>标题<input id="session-title" name="title" maxlength="100" placeholder="例如：修复登录问题"></label>
-            <button class="primary-button" type="submit">创建会话</button>
-            <p id="adapter-note" class="form-note"></p>
-            <a id="adapter-help" class="form-link" href="#" target="_blank" rel="noreferrer" hidden>查看官方操作入口</a>
-          </form>
-
-          <nav id="session-list" class="session-list"></nav>
-        </aside>
-
         <section class="conversation" aria-label="当前会话">
           <div id="empty-state" class="empty-state">
             <div class="empty-rule"></div>
             <h2 id="empty-title">选择一个会话</h2>
-            <p id="empty-description">从工作区进入已有任务，或新建一个会话。</p>
+            <p id="empty-description">点左上角 ☰ 按 Agent 与项目挑选会话，或新建一个。</p>
           </div>
 
           <div id="session-view" class="session-view" hidden>
@@ -133,18 +135,63 @@
                 <div class="session-meta"><span id="session-adapter"></span><span id="session-project"></span></div>
                 <h2 id="session-title-heading"></h2>
                 <p id="control-status"></p>
+                <p id="usage-line" class="usage-line" hidden></p>
                 <p id="session-error" class="session-error" role="alert" hidden></p>
               </div>
               <div class="session-actions">
                 <div id="model-control" class="model-control" hidden>
-                  <label><span id="model-label">会话模型</span>
-                    <select id="model-select" aria-label="会话模型"></select>
-                  </label>
-                  <label id="reasoning-control" hidden>推理强度
-                    <select id="reasoning-select" aria-label="推理强度"></select>
-                  </label>
+                  <div class="picker" id="model-picker">
+                    <span class="field-label" id="model-label">会话模型</span>
+                    <button id="model-trigger" class="picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-panel">
+                      <span class="picker-value" id="model-trigger-value">—</span>
+                      <svg class="picker-chevron"><use href="#icon-chevron"/></svg>
+                    </button>
+                    <select id="model-select" class="picker-native" aria-label="会话模型" tabindex="-1"></select>
+                    <div id="model-panel" class="glass-popover picker-panel" hidden>
+                      <input id="model-search" class="picker-search" type="search" placeholder="搜索模型" aria-label="搜索模型">
+                      <div id="model-options" class="picker-options" role="listbox" aria-label="模型列表"></div>
+                    </div>
+                  </div>
+                  <div class="picker" id="reasoning-control" hidden>
+                    <span class="field-label">推理强度</span>
+                    <button id="reasoning-trigger" class="picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="reasoning-panel">
+                      <span class="picker-value" id="reasoning-trigger-value">—</span>
+                      <svg class="picker-chevron"><use href="#icon-chevron"/></svg>
+                    </button>
+                    <select id="reasoning-select" class="picker-native" aria-label="推理强度" tabindex="-1"></select>
+                    <div id="reasoning-panel" class="glass-popover picker-panel" hidden>
+                      <div id="reasoning-options" class="picker-options" role="listbox" aria-label="推理强度列表"></div>
+                    </div>
+                  </div>
                   <button id="apply-model" class="secondary-button" type="button">切换模型</button>
                   <small id="model-note"></small>
+                </div>
+                <div class="auto-approve">
+                  <button id="auto-approve-toggle" class="secondary-button" type="button" aria-expanded="false" aria-controls="auto-approve-panel">
+                    <svg><use href="#icon-control"/></svg>自动放行
+                  </button>
+                  <div id="auto-approve-panel" class="glass-popover auto-approve-panel" role="dialog" aria-label="自动放行设置" hidden>
+                    <p class="auto-approve-lede">在限定时间内自动批准这个会话的工具调用，省掉一次次确认。</p>
+                    <div class="field">
+                      <span class="field-label">放行时长</span>
+                      <div class="segmented" role="radiogroup" aria-label="放行时长">
+                        <label class="segment"><input type="radio" name="auto-approve-minutes" value="5"><span>5 分钟</span></label>
+                        <label class="segment"><input type="radio" name="auto-approve-minutes" value="10" checked><span>10 分钟</span></label>
+                        <label class="segment"><input type="radio" name="auto-approve-minutes" value="30"><span>30 分钟</span></label>
+                      </div>
+                    </div>
+                    <div class="field">
+                      <span class="field-label">放行范围</span>
+                      <label class="switch">
+                        <input id="auto-approve-all" type="checkbox">
+                        <span class="switch-track"><span class="switch-knob"></span></span>
+                        <span class="switch-text">包含全部工具（不勾只放行 shell）</span>
+                      </label>
+                    </div>
+                    <p class="auto-approve-note">到期自动失效，最长 30 分钟。批准记录会留在对话里。</p>
+                    <button id="auto-approve-arm" class="primary-button" type="button">开始放行</button>
+                  </div>
+                  <button id="auto-approve-off" class="auto-approve-pill" type="button" hidden></button>
                 </div>
                 <button id="take-control" class="secondary-button" type="button">
                   <svg><use href="#icon-control"/></svg>接管输入
@@ -155,20 +202,136 @@
               </div>
             </header>
 
+            <div id="history-more" class="history-more" hidden>
+              <button id="load-earlier" class="secondary-button" type="button">
+                <svg><use href="#icon-history"/></svg><span>加载更早</span>
+              </button>
+            </div>
+
             <div id="event-log" class="event-log" role="log" aria-live="off"></div>
             <div id="event-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
+            <!-- 悬浮在视口右侧的固定快捷导航：置顶 ⇧ / 置底 ⇩。
+                 只在会话视图（#session-view）打开时显示，滚动到顶/底时对应按钮自动淡出。 -->
+            <div id="quick-nav" class="quick-nav" role="group" aria-label="对话快捷导航" hidden>
+              <button id="quick-nav-top" class="quick-nav-btn" type="button" aria-label="到顶部">
+                <svg aria-hidden="true"><use href="#icon-up"/></svg>
+              </button>
+              <button id="quick-nav-bottom" class="quick-nav-btn" type="button" aria-label="到底部">
+                <svg aria-hidden="true"><use href="#icon-down"/></svg>
+              </button>
+            </div>
+
             <form id="composer" class="composer">
               <label class="sr-only" for="message-input">给 Agent 的消息</label>
-              <textarea id="message-input" rows="1" maxlength="20000" placeholder="继续给 Agent 指令…" required></textarea>
-              <button class="send-button" type="submit" aria-label="发送消息">
-                <svg><use href="#icon-send"/></svg>
-              </button>
+              <div id="composer-attachments" class="composer-attachments" hidden></div>
+              <div id="composer-queue" class="composer-queue" hidden></div>
+              <div class="composer-row">
+                <button id="attach-button" class="attach-button" type="button" aria-label="添加图片或文件">
+                  <svg><use href="#icon-link"/></svg>
+                </button>
+                <button id="voice-button" class="attach-button voice-button" type="button" aria-label="语音输入" aria-pressed="false" hidden>
+                  <svg><use href="#icon-control"/></svg>
+                </button>
+                <input id="attach-input" class="attach-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,application/json,application/zip" multiple>
+                <textarea id="message-input" rows="1" maxlength="20000" placeholder="继续给 Agent 指令…"></textarea>
+                <button class="send-button" type="submit" aria-label="发送消息">
+                  <svg><use href="#icon-send"/></svg>
+                </button>
+              </div>
             </form>
           </div>
         </section>
       </main>
     </div>
+
+    <!-- 抽屉：Agent → 项目 → 会话。手机上是覆盖层，桌面隐藏（沿用左侧常驻栏）。 -->
+    <div id="drawer-mask" class="drawer-mask" hidden></div>
+    <aside id="agent-drawer" class="agent-drawer" aria-labelledby="drawer-title" inert>
+      <header class="drawer-head">
+        <button id="drawer-close" class="icon-button drawer-close" type="button" aria-label="关闭抽屉">
+          <svg><use href="#icon-close"/></svg>
+        </button>
+        <div class="drawer-heading">
+          <h2 id="drawer-title">会话</h2>
+          <p id="drawer-subtitle">按 Agent 与项目浏览</p>
+        </div>
+        <div class="connection drawer-connection" id="drawer-connection">
+          <span class="connection-dot"></span>
+          <span>本地</span>
+        </div>
+        <button id="drawer-create" class="icon-button drawer-create" type="button" aria-label="新建会话" aria-haspopup="dialog" aria-controls="create-sheet">
+          <svg><use href="#icon-plus"/></svg>
+        </button>
+      </header>
+
+      <div class="drawer-search">
+        <label class="sr-only" for="drawer-query">搜索会话、项目或 Agent</label>
+        <svg class="drawer-search-icon" aria-hidden="true"><use href="#icon-search"/></svg>
+        <input id="drawer-query" type="search" placeholder="搜索会话 / 项目 / Agent" autocomplete="off" enterkeyhint="search">
+      </div>
+
+      <nav id="drawer-tree" class="drawer-tree" aria-label="Agent 与项目会话"></nav>
+      <section id="drawer-deep-search" class="drawer-deep" aria-label="在所有会话中搜索" hidden></section>
+
+      <section class="drawer-card" aria-label="手机通知" hidden>
+        <div class="drawer-card-body">
+          <strong id="drawer-notify-title" class="drawer-card-title">手机通知</strong>
+          <span id="drawer-notify-note" class="drawer-card-note">未配置</span>
+        </div>
+        <button id="drawer-notify-toggle" class="secondary-button notify-switch" type="button" aria-pressed="false">开启</button>
+      </section>
+
+      <footer class="drawer-foot">
+        <button id="drawer-refresh" class="secondary-button" type="button">
+          <svg><use href="#icon-refresh"/></svg><span>刷新状态</span>
+        </button>
+        <button id="drawer-discover" class="secondary-button" type="button" hidden>
+          <svg><use href="#icon-history"/></svg><span>同步历史</span>
+        </button>
+      </footer>
+    </aside>
+
+    <!-- 新建会话：抽屉头部 ＋ 打开。只列出真正能新建的 Agent，不能新建的也保留并说明原因。 -->
+    <div id="create-mask" class="create-mask" hidden></div>
+    <section id="create-sheet" class="create-sheet" role="dialog" aria-modal="true" aria-labelledby="create-title" inert>
+      <header class="create-head">
+        <div>
+          <h2 id="create-title">新建会话</h2>
+          <p id="create-note">手机只能使用电脑端已登记的项目。</p>
+        </div>
+        <button id="create-close" class="icon-button" type="button" aria-label="关闭新建会话">
+          <svg><use href="#icon-close"/></svg>
+        </button>
+      </header>
+      <form id="create-form" class="create-form">
+        <label>Agent<select id="create-adapter" name="adapterId" required></select></label>
+        <label>项目<select id="create-project" name="projectAlias" required></select></label>
+        <label>标题<input id="create-title-input" name="title" maxlength="100" placeholder="例如：修复登录问题"></label>
+        <p id="create-adapter-note" class="form-note"></p>
+        <button class="primary-button" type="submit">创建会话</button>
+      </form>
+    </section>
+
+    <!-- 同步历史：显式选择哪个 Agent 去读哪个项目，而不是替用户猜一个。 -->
+    <div id="sync-mask" class="create-mask" hidden></div>
+    <section id="sync-sheet" class="create-sheet" role="dialog" aria-modal="true" aria-labelledby="sync-title" inert>
+      <header class="create-head">
+        <div>
+          <h2 id="sync-title">同步历史</h2>
+          <p id="sync-note">只读取所选 Agent 的公开会话列表，不会启动任何对话。</p>
+        </div>
+        <button id="sync-close" class="icon-button" type="button" aria-label="关闭同步历史">
+          <svg><use href="#icon-close"/></svg>
+        </button>
+      </header>
+      <form id="sync-form" class="create-form">
+        <label>Agent<select id="sync-adapter" name="adapterId" required></select></label>
+        <label>项目<select id="sync-project" name="workspaceId" required></select></label>
+        <p id="sync-adapter-note" class="form-note"></p>
+        <button class="primary-button" type="submit">开始同步</button>
+      </form>
+    </section>
 
     <div id="toast" class="toast" role="alert" hidden></div>
     <script type="module" src="/app.js"></script>
