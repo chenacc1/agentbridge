@@ -29,21 +29,50 @@
 - **通知推送**：需要你处理时推送到企业微信 / Telegram / ServerChan / PushPlus。
 - **多 Agent 统一接入**：Codex、Claude Code、DeepSeek Harness、DSH Desktop、ZCode（官方跳转）。
 
-## 一分钟上手
+## 安装到你的电脑
 
 ![从本机启动到手机控制的四步流程。](./docs/assets/phone-flow.svg)
 
-前提：Node.js 22 或更高。Codex / Claude Code / DeepSeek Harness 都是可选项，AgentBridge 会自动检测本机已安装并已登录的工具。
+### 前置条件
+
+| 项 | 要求 |
+|---|---|
+| Node.js | **22 或更高**，`node -v` 确认 |
+| 操作系统 | Windows（一键脚本齐全）；Linux / macOS 直接用 `npm start` |
+| Agent 工具 | 可选，按需安装：Claude Code / Codex / DeepSeek Harness / DSH Desktop |
+
+AgentBridge 不替你安装或登录任何 Agent，只检测本机**已安装且已登录**的那些；没装的显示「未安装」，不会假装可用。
+
+### 四步装好
 
 ```powershell
+# 1. 取代码（尚未发布到 npm，目前从仓库获取）
+git clone https://github.com/chenacc1/agentbridge.git
+cd agentbridge
+
+# 2. 装依赖（运行时只有 katex 和 qrcode 两个）
 npm install
+
+# 3. 声明手机可以访问的项目目录：别名=绝对路径，分号分隔
 $env:AGENTBRIDGE_PROJECTS = "agentbridge=D:\projects\agentbridge"
+
+# 4. 启动
 npm start
 ```
 
-在电脑上打开 [http://127.0.0.1:8787](http://127.0.0.1:8787)，桌面页会显示一次性二维码；手机连同一可信 Wi-Fi，用微信「扫一扫」扫描即可。
+打开 [http://127.0.0.1:8787](http://127.0.0.1:8787)，桌面页会显示一次性二维码；手机连同一可信 Wi-Fi，用微信「扫一扫」扫描即可。
 
-> 二维码只用于首次配对，会过期且只能用一次。配对成功后请收藏手机页显示的固定回访地址，不要收藏 `/pair?code=...` 临时链接。
+> 二维码只用于首次配对，会过期且**只能使用一次**。配对成功后请收藏手机页显示的固定回访地址，之后从收藏进入；不要收藏 `/pair?code=...` 临时链接。
+> 第 3 步可以不写：不设 `AGENTBRIDGE_PROJECTS` 时默认把**启动目录**作为唯一可用项目，别名 `workspace`。别名只允许字母、数字、`_`、`-`（≤40 字符）。
+> 这些变量必须设在**真正启动 Bridge 的那个终端**里；`.env.example` 只是一份清单，程序不会自动读取 `.env` 文件。
+
+### 装完自检
+
+```powershell
+node .\bin\agentbridge.js phone --agent echo
+```
+
+Echo 适配器不接触任何 AI 工具，只验证「CLI → 本机 Bridge → 生成配对二维码」整条链路。能打印二维码就说明安装正确，扫码后可看到手机与桌面同步。
 
 ## 一键启动与停止（Windows）
 
@@ -70,23 +99,86 @@ npm start
 
 任何模式都不要把 TCP 8787 直接映射到公网。Cloudflare 模式额外启用访问密钥闸门（密钥存于 `.agentbridge/access-key`），光有二维码不够。
 
-## 用 `/phone` 绑定当前会话
+## 让 Agent 支持 `/phone`
 
-| Agent | 安装技能（一次） | 使用 |
-|---|---|---|
-| Claude Code | `node .\bin\agentbridge.js install-claude-skill --user` | 在该项目目录执行 `/phone` |
-| Codex Desktop | `node .\bin\agentbridge.js install-codex-skill --user` | 在本地项目会话执行 `/phone`，已知 thread ID 时加 `--session` |
-| DSH Desktop | `npm run install:dsh-phone` | 在桌面会话执行 `/phone`，精确绑定屏幕上的那条会话 |
+`/phone` 不是 Agent 自带的功能，而是 AgentBridge 往对应客户端里装的一个**技能**（一个 `SKILL.md` 文件）。它只做一件事：在**当前项目目录**里调用 `agentbridge phone --agent <id>`，由 CLI 确保 Bridge 在运行、创建或附加会话、打印一次性二维码。
 
-通用命令行：
+三个前提，每个 Agent 都一样：
+
+1. Bridge 能在本机起来（上一步已自检）。
+2. 目标 Agent 已安装并登录，且**在同一个项目目录里打开**。
+3. 装完技能后**重启该客户端**，斜杠命令才会出现。
+
+技能是纯文本文件，删掉对应的 `SKILL.md` 就等于卸载。
+
+### Claude Code
 
 ```powershell
-node .\bin\agentbridge.js phone --agent echo               # 不碰 AI 工具，安全验证整条链路
-node .\bin\agentbridge.js phone --agent codex              # 当前目录新建 Codex 会话
+# 用户级（默认）：%USERPROFILE%\.claude\skills\phone\SKILL.md
+node .\bin\agentbridge.js install-claude-skill --user
+
+# 只装给某个项目：<项目>\.claude\skills\phone\SKILL.md
+node .\bin\agentbridge.js install-claude-skill --project --cwd D:\projects\agentbridge
+```
+
+重启 Claude Code，在项目目录输入 `/phone`。技能用官方 `${CLAUDE_SESSION_ID}` 绑定**当前这段对话**，不读私有 transcript、不猜路径；只预授权 `agentbridge phone --agent claude …` 这一条命令，不授予通用 Bash 权限。
+
+> 手机接管期间让原来的 Claude 终端保持空闲——Claude 官方说明多个进程写同一会话会交错消息。
+
+### Codex Desktop
+
+```powershell
+# 用户级（默认）：%USERPROFILE%\.agents\skills\phone\SKILL.md
+node .\bin\agentbridge.js install-codex-skill --user
+```
+
+重启 Codex 桌面项目，在本地项目会话输入 `/phone`。Codex 没对外提供「当前线程 ID」，所以不带参数时它会在同一项目目录**新建**一个会话并明确标注；只有你已知 thread ID 时才精确附加：
+
+```powershell
+node .\bin\agentbridge.js phone --agent codex --session <thread-id>
+```
+
+### DSH Desktop
+
+前提：DSH Desktop 已安装，且存在桌面 profile `%USERPROFILE%\.dsh\profiles\desktop\package.json`（或由 `DSH_HOME` 指定）。
+
+```powershell
+npm run install:dsh-phone
+```
+
+这条命令只改 `%USERPROFILE%\.dsh`：把插件复制进 profile 的 `node_modules`、在 profile 的 `package.json` 里登记 `@agentbridge/dsh-phone` 并加入 `dsh.profile.bundles`，同时留一份 `package.json.agentbridge-backup`；**不会**改动 `DSH Desktop.exe` 或 `app.asar`。装完重启 DSH Desktop，在项目会话里输入 `/phone`。
+
+这是唯一能**精确绑定屏幕上那条会话**的入口（会话 ID、目录、provider、模型都取自真实会话）。卸载：
+
+```powershell
+npm run uninstall:dsh-phone
+```
+
+### DeepSeek Harness（CLI / ACP）
+
+前提：官方 `dsh` CLI 已安装并配置好模型与凭据，`dsh --profile acp --help` 能打印帮助（而不是弹出浏览器界面）。这个适配器没有斜杠技能，直接用 CLI：
+
+```powershell
 node .\bin\agentbridge.js phone --agent deepseek-harness
 ```
 
-`/phone` 只接受来自本机 loopback 的绝对路径，手机端无法提交任意目录。仓库目前尚未创建 `v0.1.0` 标签；打上固定标签后，其他人可用 `npm install --global github:chenacc1/agentbridge#v0.1.0; agentbridge setup codex` 一行安装 CLI 与技能。
+### 一张表汇总
+
+| Agent | 前提 | 要执行的安装命令 | 重启客户端 | 入口 |
+|---|---|---|---|---|
+| Claude Code | 已安装并登录 | `install-claude-skill --user` | 需要 | `/phone` |
+| Codex Desktop | 已安装并登录 | `install-codex-skill --user` | 需要 | `/phone` |
+| DSH Desktop | 存在桌面 profile | `npm run install:dsh-phone` | 需要 | `/phone` |
+| DeepSeek Harness | `dsh --profile acp --help` 可用 | 不需要 | — | `phone --agent deepseek-harness` |
+| Echo | 无 | 不需要 | — | `phone --agent echo` |
+| ZCode | 仅官方 Remote Control / Bot Channel | 不需要 | — | AgentBridge 不代管 |
+
+### 通用说明
+
+- `/phone` 只接受来自本机 loopback 的绝对路径，手机会话无法提交任意目录。
+- 想让 `agentbridge` 成为全局命令，在仓库里跑一次 `npm link`。
+- 仓库目前尚未创建 `v0.1.0` 标签；打上固定标签后，别人可用一行装好 CLI 与 Codex 技能：
+  `npm install --global github:chenacc1/agentbridge#v0.1.0; agentbridge setup codex`
 
 ## 支持的 Agent
 
