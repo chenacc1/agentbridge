@@ -4,14 +4,17 @@ AgentBridge lets a phone opened from WeChat's scanner control coding agents runn
 
 This repository is a working local-first MVP. It includes:
 
-- a one-time, two-minute QR pairing flow;
-- a responsive mobile/desktop web console;
+- a one-time, two-minute QR pairing flow, plus a fixed non-secret return address the phone can favourite;
+- a responsive mobile/desktop web console navigated as Agent → project → conversation;
+- durable Workspace and conversation catalogs, so a bridge restart no longer loses history;
 - HTTP commands plus resumable Server-Sent Events;
 - project allowlisting, per-device sessions, command idempotency, and control leases;
 - an Echo adapter for safe end-to-end testing;
 - real OpenAI Codex App Server and Claude Code CLI adapters;
-- a real DeepSeek Harness ACP adapter and a truthful ZCode native-remote handoff.
-- a DSH Desktop `/phone` bundle that binds the exact open Desktop conversation.
+- a real DeepSeek Harness ACP adapter and a truthful ZCode native-remote handoff;
+- a DSH Desktop `/phone` bundle that binds the exact open Desktop conversation;
+- attachments, in-conversation search, message queueing, model switching, and time-boxed auto-approval from the phone;
+- push notifications to WeCom, Telegram, ServerChan, or PushPlus when an agent needs you.
 
 ## Install `/phone` from a GitHub release
 
@@ -50,6 +53,22 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-agentb
 ```
 
 This creates `AgentBridge.lnk` on the current user's desktop. The shortcut starts the same guarded launcher and opens the local dashboard.
+
+### Windows one-click stop
+
+Double-click `安全停止 AgentBridge.cmd` in the project root, or run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-agentbridge.ps1
+```
+
+It asks the running bridge to stop over the loopback-only `POST /api/local/shutdown` and waits for port 8787 to be released. Three things make it safe rather than merely convenient:
+
+- it refuses to touch a port-8787 listener whose owning process is not this repository's `node src/server.js`, so an unrelated process is never killed;
+- if a turn is still running the bridge answers `409 ACTIVE_SESSIONS`, the script lists those sessions and exits without stopping anything — end them in the console first;
+- if the port is not released before the deadline it reports that instead of force-killing the process.
+
+`-Port` and `-WaitSeconds` override the defaults. Only the bridge is stopped: Cloudflare, Tailscale, and ZeroTier processes keep running.
 
 ### Tailscale one-click remote mode
 
@@ -562,6 +581,15 @@ AgentBridge reads environment variables; [`.env.example`](./.env.example) docume
 | `AGENTBRIDGE_SESSION_TTL_MS` | `259200000` | Device-session lifetime (72 hours) |
 | `AGENTBRIDGE_CLAUDE_MODEL` | provider setting | Optional explicit Claude Code/Kimi API model ID used for phone turns |
 | `AGENTBRIDGE_CLAUDE_FIRST_OUTPUT_TIMEOUT_MS` | `30000` | Fail a Claude turn when its process produces no structured output within this many milliseconds |
+| `AGENTBRIDGE_CLAUDE_INTERACTION_TIMEOUT_MS` | `300000` | Deny an unanswered Claude prompt after this long so the turn continues instead of parking |
+| `AGENTBRIDGE_ACCESS_KEY` | unset | Shared gate key for public-exposure modes. The Cloudflare launcher generates and reuses one in `.agentbridge/access-key` |
+| `AGENTBRIDGE_LOCAL_ORIGIN` | `http://127.0.0.1:<AGENTBRIDGE_PORT>` | Loopback origin the CLI and `/phone` talk to, when the bridge listens elsewhere locally |
+| `AGENTBRIDGE_NOTIFY_WEBHOOK` | unset | Webhook for approval/question/finished/failed notifications. Unset leaves the feature inert |
+| `AGENTBRIDGE_NOTIFY_FORMAT` | `json` | `json`, `wecom`, `telegram`, `serverchan`, or `pushplus` |
+| `AGENTBRIDGE_NOTIFY_CHAT_ID` | unset | Telegram chat ID |
+| `AGENTBRIDGE_NOTIFY_TOKEN` | unset | Provider token (PushPlus, ServerChan) |
+| `AGENTBRIDGE_NOTIFY_CHANNEL` | provider default | Provider-specific channel; PushPlus uses `clawbot` or `wechat` |
+| `AGENTBRIDGE_NOTIFY_LINK` | unset | `1` appends the app link, including the access key, to each notification |
 
 If the automatically selected LAN address is not reachable from the phone, set it explicitly:
 
@@ -588,30 +616,61 @@ A production Official Account or WeCom integration is a separate channel adapter
 
 ## API map
 
+Static shell: `/` and `/pair` serve `public/index.html`; `/app.js`, `/styles.css`, and `/transcript.js` are content-addressed entry points; `markdown.js`, `highlight.js`, `workspace-navigation.js`, `adapter-capabilities.js`, and `command-id.js` are the modules those entry points import; `/vendor/katex/*` serves KaTeX from the installed package.
+
+**Loopback only** — the desktop page and the local CLI/companion use these, and a phone is answered `403`:
+
+- `GET /api/health`: `{ ok, shuttingDown, lastSeq }`. The launchers and `/phone` poll it before starting a second copy, and it answers `503` while shutting down.
+- `GET /api/bootstrap`, `GET /api/pairing/qr.svg`, `GET /api/local/pairings/:id/qr.svg`: desktop pairing bootstrap and QR images.
+- `POST /api/pairing/rotate`: mint a fresh one-time pairing code and QR.
+- `GET /api/return-qr.svg`: QR for the fixed, non-secret return address.
+- `POST /api/local-session`: give the desktop page its own device session.
+- `POST /api/local/phone`: current-directory/session launcher used by the CLI.
+- `POST /api/local/workspaces`: register an existing local directory as a Workspace.
+- `POST /api/local/dsh-desktop/register`: register the exact live DSH Agent from `/phone`; `reconnect: true` re-binds an existing conversation instead of minting a pairing.
+- `POST /api/local/shutdown`: safe stop. Answers `409 ACTIVE_SESSIONS` (listing the blocking sessions) while a turn is still running.
+- `POST /api/local/notify-test`: send one real message through the configured notification channel.
+
+**Pairing and devices:**
+
 - `POST /api/access`: exchange the Cloudflare-mode access key for a short-lived HttpOnly gate cookie.
-- `GET /api/bootstrap` and `GET /api/pairing/qr.svg`: loopback-only desktop pairing bootstrap.
-- `GET /api/return-qr.svg`: loopback-only QR for the fixed, non-secret return address.
 - `POST /api/pairings/exchange`: consume the one-time code and set a device cookie.
-- `POST /api/recent-session`: record the calling device's last active Bridge session for safe root-address resume.
 - `GET /api/devices` and `POST /api/devices/:id/revoke`: list and revoke paired devices.
-- `POST /api/local/phone`: loopback-only current-directory/session launcher used by the CLI.
-- `POST /api/local/workspaces`: loopback-only registration of an existing local directory as a Workspace.
-- `POST /api/local/dsh-desktop/register`: loopback-only registration of the exact live DSH Agent from `/phone`.
-- `GET /api/local/dsh-desktop/channels/:id/poll`: authenticated local companion command queue.
-- `POST /api/local/dsh-desktop/channels/:id/events`: authenticated DSH event ingestion.
-- `POST /api/local/dsh-desktop/channels/:id/interactions`: authenticated DSH question/approval frames (answerable, so they stay off the seq-deduplicated event stream).
+- `POST /api/recent-session`: record the calling device's last active Bridge session for safe root-address resume.
+
+**Catalog:**
+
+- `GET /api/state`: machine, device, adapters, Workspaces, sessions (including `session.queued` and `session.autoApprove`), and the event cursor.
 - `GET /api/workspaces`: authenticated, path-redacted Workspace catalog.
 - `GET /api/conversations?workspaceId=...`: read the local conversation catalog; add `adapterId=codex&refresh=1` for explicit Provider discovery.
-- `GET /api/state`: machine, device, adapters, Workspaces, sessions, and event cursor.
+- `GET /api/search?q=...`: search message text and tool commands, at most five hits per conversation, reporting `truncated` when the log read hit its budget.
+
+**Events:**
+
 - `GET /api/events?after=<seq>`: resumable SSE stream. The `after` parameter is optional; the phone relies on the browser's own `Last-Event-ID`, so an automatic reconnect resumes instead of replaying the whole buffer. A fresh page with no cursor receives only the newest 500 events.
 - `GET /api/sessions/:id/history?limit=300&before=<seq>`: one conversation's history. Served from the replay window, or read back from the append-only log for a session the window has already evicted. `before` pages backwards, which is what the phone 加载更早 control uses; the response reports `hasMore` and `oldestSeq`. `no-store`.
+
+**Commands** (device cookie required; mutating calls are same-origin checked):
+
 - `POST /api/sessions`: create an adapter session.
 - `POST /api/sessions/:id/messages`: send an idempotent command.
 - `POST /api/sessions/:id/model`: apply a model and optional reasoning choice from the Provider-supplied allowlist.
 - `POST /api/sessions/:id/control`: claim or explicitly take over input control.
 - `POST /api/sessions/:id/stop`: interrupt the active turn.
+- `POST /api/sessions/:id/auto-approve`: arm or cancel the time-boxed blanket approval. The server caps the window at 30 minutes and only the device holding the input lease may change it.
+- `POST /api/sessions/:id/queue/cancel`: withdraw a queued message.
+- `POST /api/sessions/:id/attachments` and `GET /api/attachments/:id`: upload raw file bytes (8 MB each, six per message) and read them back.
 - `POST /api/approvals/:id`: resolve a pending approval request (Codex, DeepSeek Harness ACP, or DSH Desktop).
 - `POST /api/requests/:id`: answer a pending agent question with `{ answers: [{ id, selected, custom? }] }`, or `{ cancel: true }` to skip it.
+- `POST /api/notifications`: mute or unmute bridge-wide notifications (`{ muted }`).
+
+**DSH Desktop companion channel** (authenticated with the companion credential, not the device cookie):
+
+- `GET /api/local/dsh-desktop/channels/:id/poll`: command queue.
+- `POST /api/local/dsh-desktop/channels/:id/events`: DSH event ingestion.
+- `POST /api/local/dsh-desktop/channels/:id/interactions`: DSH question/approval frames (answerable, so they stay off the seq-deduplicated event stream).
+- `POST /api/local/dsh-desktop/channels/:id/results`: the companion reports the outcome of a `create-session` request.
+- `GET /api/local/dsh-desktop/channels/:id/qr.svg`: pairing QR for that channel.
 
 ## Verification
 
@@ -625,7 +684,7 @@ The tests cover configuration, one-time and session-bound pairing, event persist
 
 `npm run verify:mobile` drives the real mobile page in headless Chrome against a real bridge server, using the real DSH Desktop channel pipeline, and asserts the whole conversation is displayed: after a reload, while a reply streams, and once it is committed. Set `CHROME_PATH` if the browser is not in a standard location.
 
-The other `verify:*` scripts each boot a real bridge and a real headless browser: `verify:navigation` (drawer navigation, history paging, and a style audit that all drawer rows share one radius while the notification card's border and blur equal `.create-sheet`'s), `verify:models` (the model and reasoning popovers), `verify:scrim` (background and text contrast), `verify:notify`, `verify:attach`, `verify:features`, `verify:blocks`, and `verify:guide`.
+The other `verify:*` scripts each boot a real bridge and a real headless browser: `verify:navigation` (drawer navigation, history paging, and a style audit that all drawer rows share one radius while the notification card's border and blur equal `.create-sheet`'s), `verify:models` (the model and reasoning popovers), `verify:scrim` (background and text contrast), `verify:notify` (the notification switch and 发送测试), `verify:attach` (upload, the thumbnail preview, and its own read-back URL), `verify:features` (three phone-only behaviours), `verify:blocks` (tables, formulas, code cards), `verify:questions` (a question answered on the phone arrives on the desktop), and `verify:quicknav` (the floating 置顶/置底 control at both layouts).
 
 Two failure modes are covered by tests because they used to take the whole process down: an event that cannot be written to the log is reported and dropped rather than thrown back at the adapter that emitted it fire-and-forget, and a failed catalogue write no longer skips the queue, notification and log work that follows it. A `send` whose own event cannot be logged still fails with `503` — a client that is waiting for an answer should be told to retry.
 
