@@ -86,7 +86,7 @@ tailscale set --operator="$env:USERNAME"
 
 The operator setting persistently allows that Windows account to control the local Tailscale service, so AgentBridge does not apply it silently. It does not grant access to other tailnets, but it is still a local privilege change and should be enabled only for your own trusted Windows account.
 
-If the phone cannot connect, confirm it can open the shown `http://100.x.y.z:8787` address while Tailscale is connected. Windows Firewall should allow Node.js on the Tailscale/private network; do not expose TCP 8787 through the router. The full threat model, alternatives, and acceptance checklist are in [`docs/tailscale-remote-mode-research.md`](./docs/tailscale-remote-mode-research.md).
+If the phone cannot connect, confirm it can open the shown `http://100.x.y.z:8787` address while Tailscale is connected. Windows Firewall should allow Node.js on the Tailscale/private network; do not expose TCP 8787 through the router.
 
 ### ZeroTier one-click remote mode (works where Tailscale is unreliable)
 

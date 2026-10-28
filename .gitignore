@@ -33,3 +33,14 @@ docs/AgentBridge-讲解视频分镜文稿表.md
 docs/assets/act3-recording-plan.md
 docs/assets/storyboard-style-reference.png
 scripts/capture-*.mjs
+
+# Presentation, promo, and design material describes or sells the product but is
+# not part of the software tool itself. These files are kept locally only.
+DESIGN.md
+PRODUCT.md
+docs/项目梳理与讲解稿.md
+docs/agentbridge-product-guide.html
+docs/liquid-glass-ui-components.html
+docs/assets/agentbridge-workspaces-desktop.png
+docs/assets/agentbridge-workspaces-mobile.png
+scripts/verify-product-guide.mjs
