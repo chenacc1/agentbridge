@@ -327,7 +327,7 @@ test("a conversation without a live companion says what to do instead of naming 
 });
 test("a stale desktop integration is reported instead of failing silently", async (t) => {
   const channels = new DshDesktopChannelManager();
-  assert.deepEqual(channels.integrationStatus(), { paired: false, version: null, required: 5, stale: false });
+  assert.deepEqual(channels.integrationStatus(), { paired: false, version: null, required: 6, stale: false });
 
   channels.register({
     providerSessionId: "dsh-old-build",
@@ -360,12 +360,22 @@ test("a stale desktop integration is reported instead of failing silently", asyn
   });
   assert.equal(channels.integrationStatus().stale, true);
 
-  // Re-registering with the version that shrinks oversized batches clears the warning.
+  // v5 retries forever and bounds its batches, but it read a service it never
+  // injected, so "新建对话" from the phone failed with a raw Cordis error.
   channels.register({
     providerSessionId: "dsh-old-build",
     cwd: "D:\\work",
     title: "旧集成",
     integrationVersion: 5,
+  });
+  assert.equal(channels.integrationStatus().stale, true);
+
+  // Re-registering with the version that injects `agents` clears the warning.
+  channels.register({
+    providerSessionId: "dsh-old-build",
+    cwd: "D:\\work",
+    title: "旧集成",
+    integrationVersion: 6,
   });
   assert.equal(channels.integrationStatus().stale, false);
 });

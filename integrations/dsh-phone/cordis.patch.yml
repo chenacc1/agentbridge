@@ -2,4 +2,4 @@
 # bundles so the public command registry and live Agent runtime already exist.
 - insert:
     - id: agentbridge-phone
-      name: '@agentbridge/dsh-phone'
+      name: '@chenacc/dsh-agentbridge'

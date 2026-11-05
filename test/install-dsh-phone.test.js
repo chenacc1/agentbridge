@@ -26,9 +26,9 @@ test("DSH phone installer copies the bundle and updates the Desktop profile idem
   await run(process.execPath, [installer], { env });
 
   const profile = JSON.parse(await readFile(path.join(profileDir, "package.json"), "utf8"));
-  assert.equal(profile.dsh.profile.bundles.filter((name) => name === "@agentbridge/dsh-phone").length, 1);
-  assert.match(profile.dependencies["@agentbridge/dsh-phone"], /^file:/);
-  const installed = path.join(profileDir, "node_modules", "@agentbridge", "dsh-phone");
+  assert.equal(profile.dsh.profile.bundles.filter((name) => name === "@chenacc/dsh-agentbridge").length, 1);
+  assert.match(profile.dependencies["@chenacc/dsh-agentbridge"], /^file:/);
+  const installed = path.join(profileDir, "node_modules", "@chenacc/dsh-agentbridge");
   const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
   assert.equal(installedManifest.dsh.bundle.patch, "./cordis.patch.yml");
   assert.match(await readFile(path.join(installed, "cordis.patch.yml"), "utf8"), /agentbridge-phone/);
@@ -37,7 +37,7 @@ test("DSH phone installer copies the bundle and updates the Desktop profile idem
   const uninstaller = path.resolve("scripts/uninstall-dsh-phone.mjs");
   await run(process.execPath, [uninstaller], { env });
   const removedProfile = JSON.parse(await readFile(path.join(profileDir, "package.json"), "utf8"));
-  assert.equal(removedProfile.dsh.profile.bundles.includes("@agentbridge/dsh-phone"), false);
-  assert.equal("@agentbridge/dsh-phone" in removedProfile.dependencies, false);
+  assert.equal(removedProfile.dsh.profile.bundles.includes("@chenacc/dsh-agentbridge"), false);
+  assert.equal("@chenacc/dsh-agentbridge" in removedProfile.dependencies, false);
   await assert.rejects(readFile(path.join(installed, "package.json")), /ENOENT/);
 });

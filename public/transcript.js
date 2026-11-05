@@ -330,7 +330,13 @@ export function buildEntries(relevant, options = {}) {
       renderedDeltas.add(event.turnId);
       entries.push(entryFor(event, "Agent 正在回复", textByTurn.get(event.turnId) ?? "", "assistant", true, settings));
     } else if (event.kind === "message.completed") {
-      entries.push(entryFor(event, event.payload.role === "user" ? "你" : "Agent", event.payload.text, event.payload.role, true, settings));
+      // An assistant message that carried only tool calls has no text. Rendering it makes
+      // an empty "Agent" bubble between the tool rows is pure noise, so skip it — unless it
+      // brought attachments, which are worth a row on their own.
+      const messageText = String(event.payload.text ?? "");
+      const messageAttachments = Array.isArray(event.payload.attachments) ? event.payload.attachments : [];
+      if (!messageText.trim() && messageAttachments.length === 0) continue;
+      entries.push(entryFor(event, event.payload.role === "user" ? "你" : "Agent", messageText, event.payload.role, true, settings));
     } else if (event.kind === "tool.started" || event.kind === "tool.completed") {
       const label = event.kind.endsWith("started") ? "工具开始" : "工具完成";
       const detail = event.payload.command ? String(event.payload.command) : `${event.payload.type ?? "tool"}${event.payload.status ? ` · ${event.payload.status}` : ""}`;

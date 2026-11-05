@@ -8,7 +8,7 @@ const dshHome = path.resolve(process.env.DSH_HOME || path.join(process.env.USERP
 const profileDir = path.join(dshHome, "profiles", "desktop");
 const profilePackagePath = path.join(profileDir, "package.json");
 const backupPath = path.join(profileDir, "package.json.agentbridge-backup");
-const installDir = path.join(profileDir, "node_modules", "@agentbridge", "dsh-phone");
+const installDir = path.join(profileDir, "node_modules", "@chenacc/dsh-agentbridge");
 
 async function exists(filePath) {
   try {
@@ -39,13 +39,13 @@ await Promise.all([
   copyFile(path.join(sourceDir, "lib", "index.js"), path.join(installDir, "lib", "index.js")),
 ]);
 
-profile.dependencies["@agentbridge/dsh-phone"] = `file:${sourceDir.replaceAll("\\", "/")}`;
-if (!profile.dsh.profile.bundles.includes("@agentbridge/dsh-phone")) {
-  profile.dsh.profile.bundles.push("@agentbridge/dsh-phone");
+profile.dependencies["@chenacc/dsh-agentbridge"] = `file:${sourceDir.replaceAll("\\", "/")}`;
+if (!profile.dsh.profile.bundles.includes("@chenacc/dsh-agentbridge")) {
+  profile.dsh.profile.bundles.push("@chenacc/dsh-agentbridge");
 }
 await writeFile(profilePackagePath, `${JSON.stringify(profile, null, 2)}\n`, "utf8");
 
-console.log(`Installed @agentbridge/dsh-phone into ${installDir}`);
+console.log(`Installed @chenacc/dsh-agentbridge into ${installDir}`);
 console.log(`Updated Desktop profile: ${profilePackagePath}`);
 console.log(`Backup: ${backupPath}`);
 console.log("Restart DSH Desktop, open a project conversation, then type /phone.");

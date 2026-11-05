@@ -2,6 +2,11 @@
   "name": "agentbridge-mvp",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chenacc1/agentbridge.git"
+  },
   "type": "module",
   "description": "Use WeChat QR scanning to control local coding agents through a secure mobile web console.",
   "files": [
@@ -26,7 +31,7 @@
     "dev": "node --watch src/server.js",
     "install:dsh-phone": "node scripts/install-dsh-phone.mjs",
     "uninstall:dsh-phone": "node scripts/uninstall-dsh-phone.mjs",
-    "test": "node --test",
+    "test": "node --test \"test/**/*.test.js\"",
     "verify:mobile": "node scripts/verify-mobile-transcript.mjs",
     "verify:navigation": "node scripts/verify-workspace-ui.mjs",
     "verify:blocks": "node scripts/verify-message-blocks.mjs",
@@ -36,8 +41,10 @@
     "verify:attach": "node scripts/verify-attachments.mjs",
     "verify:features": "node scripts/verify-features.mjs",
     "verify:quicknav": "node scripts/verify-quick-nav.mjs",
-    "check": "node --check src/server.js && node --check src/cli.js && node --check src/cc-switch-models.js && node --check src/workspaces/workspace-catalog.js && node --check src/conversations/conversation-catalog.js && node --check src/adapters/capabilities.js && node --check src/adapters/claude.js && node --check src/adapters/codex.js && node --check src/adapters/deepseek-harness.js && node --check src/adapters/dsh-desktop.js && node --check src/dsh-desktop-channels.js && node --check src/event-store.js && node --check src/notifier.js && node --check src/attachments.js && node --check src/session-manager.js && node --check integrations/dsh-phone/lib/index.js && node --check src/adapters/zcode-native.js && node --check public/adapter-capabilities.js && node --check public/workspace-navigation.js && node --check public/markdown.js && node --check public/highlight.js && node --check public/transcript.js && node --check public/app.js && node --check scripts/verify-workspace-ui.mjs && node --check scripts/verify-message-blocks.mjs && node --check scripts/verify-background-scrim.mjs && node --check scripts/verify-model-control.mjs && node --check scripts/verify-notifications.mjs && node --check scripts/verify-attachments.mjs && node --check scripts/verify-features.mjs && node --check scripts/verify-quick-nav.mjs && node --check scripts/verify-questions.mjs",
-    "verify:questions": "node scripts/verify-questions.mjs"
+    "check": "node --check src/server.js && node --check src/cli.js && node --check src/cc-switch-models.js && node --check src/workspaces/workspace-catalog.js && node --check src/conversations/conversation-catalog.js && node --check src/adapters/capabilities.js && node --check src/adapters/claude.js && node --check src/adapters/codex.js && node --check src/adapters/deepseek-harness.js && node --check src/adapters/dsh-desktop.js && node --check src/dsh-desktop-channels.js && node --check src/event-store.js && node --check src/notifier.js && node --check src/attachments.js && node --check src/session-manager.js && node --check integrations/dsh-phone/lib/index.js && node --check src/adapters/zcode-native.js && node --check public/adapter-capabilities.js && node --check public/workspace-navigation.js && node --check public/markdown.js && node --check public/highlight.js && node --check public/transcript.js && node --check public/app.js && node --check scripts/verify-workspace-ui.mjs && node --check scripts/verify-message-blocks.mjs && node --check scripts/verify-background-scrim.mjs && node --check scripts/verify-model-control.mjs && node --check scripts/verify-notifications.mjs && node --check scripts/verify-attachments.mjs && node --check scripts/verify-features.mjs && node --check scripts/verify-quick-nav.mjs && node --check scripts/verify-questions.mjs && node --check scripts/verify-responsive.mjs && node --check scripts/verify-product-guide.mjs",
+    "verify:questions": "node scripts/verify-questions.mjs",
+    "verify:responsive": "node scripts/verify-responsive.mjs",
+    "verify:guide": "node scripts/verify-product-guide.mjs"
   },
   "engines": {
     "node": ">=22"

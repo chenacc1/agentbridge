@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 const name = "agentbridge-dsh-phone";
-const inject = ["commands", "apiProxy", "llm"];
+// `agents` is not optional: creating a conversation from the phone asks the agent
+// service to open one, and touching a service that was not injected throws
+// `cannot get property "agents" without inject` — which is what the phone showed
+// as a failed "新建对话" instead of the friendly message below.
+const inject = ["commands", "apiProxy", "llm", "agents"];
 const DEFAULT_ORIGIN = "http://127.0.0.1:8787";
 const POLL_DELAY_MS = 800;
 const EVENT_BATCH_DELAY_MS = 120;
@@ -20,7 +24,7 @@ const EVENT_STRING_CLIP = 2_048;
 // Bumped whenever the integration gains something the phone relies on. The bridge
 // compares it with the version it needs, because this file is *copied* into the DSH
 // profile: changing the repository does nothing until install:dsh-phone runs again.
-const INTEGRATION_VERSION = 5;
+const INTEGRATION_VERSION = 6;
 // Reconnect pacing. The first attempt is immediate (a bridge restart is usually already
 // over by the time the next poll fails), then it backs off to `RECONNECT_MAX_MS`.
 const RECONNECT_MIN_MS = 1_000;
@@ -543,9 +547,16 @@ export class PhoneConnections {
    */
   async createSession(state, command) {
     try {
-      const create = this.ctx.agents && typeof this.ctx.agents.create === "function"
-        ? this.ctx.agents.create.bind(this.ctx.agents)
-        : null;
+      // Read defensively: a build that does not inject `agents` throws on the bare
+      // property access, and that raw Cordis error was all the phone ever saw. The
+      // try/catch keeps the explanatory error reachable in that case too.
+      let service = null;
+      try {
+        service = this.ctx.agents ?? null;
+      } catch {
+        service = null;
+      }
+      const create = typeof service?.create === "function" ? service.create.bind(service) : null;
       if (!create) throw new Error("这个 DSH Desktop 版本不支持从手机新建会话（缺少 ctx.agents.create）");
       const cwd = typeof command.cwd === "string" && command.cwd ? command.cwd : state.agent.session.header.cwd;
       if (!cwd) throw new Error("这个会话没有项目目录，无法新建");

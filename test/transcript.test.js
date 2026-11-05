@@ -314,3 +314,38 @@ test("a fetched page and the live stream never render the same event twice", () 
   assert.equal(entries.length, 3);
   assert.deepEqual(entries.map((entry) => entry.html.match(/历史消息一|历史消息二|新消息/)?.[0]).filter(Boolean), ["历史消息一", "历史消息二", "新消息"]);
 });
+
+// An assistant message that only carried tool calls has no text. It used to render as an
+// empty "Agent" bubble between the tool rows — on a phone that reads as "the agent
+// answered with nothing", which is exactly what a person reports as "I got no reply".
+test("an assistant message with no text and no attachments is not rendered as an empty bubble", () => {
+  const store = buffer();
+  store.add(completedMessage({ seq: 1, turnId: "p:1", role: "user", text: "做个东西" }));
+  store.add(completedMessage({ seq: 2, turnId: "p:1", text: "" }));
+  store.add({ ...completedMessage({ seq: 3, turnId: "p:1", text: "" }), payload: { role: "assistant", text: "", attachments: [{ id: "a1", name: "shot.png", kind: "image", url: "/api/attachments/a1" }] } });
+  store.add(completedMessage({ seq: 4, turnId: "p:1", text: "真正的回答" }));
+
+  const entries = buildEntries(store.events);
+  assert.equal(entries.length, 3, `expected the empty assistant bubble to be skipped, got ${entries.length} entries`);
+  assert.match(entries[0].html, /做个东西/);
+  assert.match(entries[1].html, /shot\.png/, "a message that brought an attachment still deserves a row");
+  assert.match(entries[2].html, /真正的回答/);
+});
+
+// A failed turn has to say why. `执行异常` with the reason is what tells the reader the
+// run broke instead of the agent having nothing to say.
+test("a failed turn renders its reason, not a silent gap", () => {
+  const store = buffer();
+  store.add(completedMessage({ seq: 1, turnId: "p:1", role: "user", text: "现在项目架构是怎样的？" }));
+  store.add({
+    ...completedMessage({ seq: 2, turnId: "p:1", text: "" }),
+    kind: "turn.failed",
+    payload: { error: "Connection error.（TRANSPORT）" },
+  });
+
+  const entries = buildEntries(store.events);
+  const failure = entries.at(-1);
+  assert.match(failure.html, /执行异常/);
+  assert.match(failure.html, /Connection error/);
+  assert.match(failure.html, /TRANSPORT/);
+});

@@ -12,6 +12,9 @@ const model = {
   selectedWorkspaceId: null,
   lastSeq: 0,
   stream: null,
+  // The last stream state the browser reported, before the selected session's own
+  // desktop liveness is taken into account (see applyConnection).
+  connection: null,
   bootstrap: null,
   stopConfirmUntil: 0,
   shutdownConfirmUntil: 0,
@@ -351,9 +354,26 @@ async function copyText(value) {
 }
 
 function setConnection(status, label) {
+  model.connection = { status, label };
+  applyConnection();
+}
+
+/**
+ * Show the fact that actually decides whether typing does anything.
+ *
+ * The stream being open only means the phone can hear *this bridge*; a DSH Desktop
+ * conversation also needs its companion polling, and for the whole time that link
+ * was dead the chip still read 实时同步 — the exact reassuring lie that kept a
+ * person waiting on a turn that had never started. So the session's own desktop
+ * liveness wins over the stream state while it applies.
+ */
+function applyConnection() {
   const element = $("#connection-status");
-  element.className = `connection ${status}`;
-  element.lastElementChild.textContent = label;
+  const session = currentSession();
+  const desktopDown = session?.desktopConnected === false;
+  const state = desktopDown ? { status: "offline", label: "桌面端未连接" } : model.connection ?? { status: "", label: "正在连接" };
+  element.className = `connection ${state.status}`;
+  element.lastElementChild.textContent = state.label;
 }
 
 async function pairFromUrl() {
@@ -529,7 +549,7 @@ function currentWorkspace() {
 
 
 function statusLabel(status) {
-  return ({ starting: "启动中", ready: "就绪", running: "执行中", failed: "失败", offline: "离线" })[status] ?? status;
+  return ({ starting: "启动中", ready: "就绪", running: "执行中", stopping: "停止中", failed: "失败", offline: "离线" })[status] ?? status;
 }
 
 function eventStatusLabel(kind) {
@@ -607,7 +627,7 @@ function renderModelControl(session, ownsControl) {
     : `<option value="">${directory ? "Agent 未提供可切换模型" : "还没有模型目录"}</option>`;
   renderReasoningOptions(directory);
   renderPicker("model");
-  const isIdle = session.status !== "running";
+  const isIdle = session.status !== "running" && session.status !== "stopping";
   const offline = session.status === "offline" || session.status === "failed";
   const enabled = choices.length > 0 && ownsControl && isIdle && !offline;
   select.disabled = !enabled;
@@ -644,6 +664,7 @@ function renderSession() {
     $("#empty-description").textContent = hasSessions
       ? "点左上角 ☰ 按 Agent 与项目挑选会话。"
       : "点左上角 ☰ 后选 ＋ 新建会话，或在抽屉底部用「同步历史」读取 Agent 的公开会话。";
+    applyConnection();
     renderQuickNav();
     return;
   }
@@ -665,7 +686,12 @@ function renderSession() {
   sessionError.setAttribute("role", sessionHint ? "status" : "alert");
   sessionError.textContent = sessionHint || (session.lastError ? `执行失败：${session.lastError}` : "");
   const ownsControl = session.controller?.deviceId === model.state.device.id;
-  const canSend = session.status !== "running" && !desktopOffline && (!session.controller || ownsControl);
+  // A running turn no longer locks the composer: the bridge queues what you type and
+  // sends it the moment the turn ends (`.queue-item` rows above the input show it).
+  // The only reasons not to accept text are a desktop that is not connected and a
+  // turn that has not even been started yet.
+  const busy = session.status === "running" || session.status === "stopping";
+  const canSend = !desktopOffline && session.status !== "starting" && (!session.controller || ownsControl);
   $("#control-status").textContent = ownsControl
     ? `当前由此设备控制，租约至 ${new Date(session.controller.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
     : session.controller ? `当前由 ${session.controller.deviceName} 控制` : "发送首条消息时自动获得控制权";
@@ -674,17 +700,29 @@ function renderSession() {
   $("#message-input").disabled = !canSend;
   $("#message-input").placeholder = desktopOffline
     ? "桌面端未连接：先在电脑上那个会话里执行 /phone…"
-    : session.status === "running"
-      ? "Agent 正在执行，完成后可继续…"
-      : !session.controller ? "发送第一条指令并取得控制权…" : ownsControl ? "继续给 Agent 指令…" : "先接管输入再发送…";
+    : session.status === "stopping"
+      ? "正在停止本轮，结束后自动发送…"
+      : session.status === "running"
+        ? "Agent 正在执行：现在发送会排队，本轮结束后自动发出…"
+        : !session.controller ? "发送第一条指令并取得控制权…" : ownsControl ? "继续给 Agent 指令…" : "先接管输入再发送…";
   const stopButton = $("#stop-session");
-  stopButton.hidden = session.status !== "running";
-  stopButton.disabled = !ownsControl;
-  stopButton.title = ownsControl ? "停止当前执行" : "只有当前控制设备可以停止执行";
+  // 停止中 keeps the control visible: it is the only place that says the request is
+  // out, and it must not look like the turn simply finished.
+  stopButton.hidden = !busy;
+  stopButton.disabled = !ownsControl || session.status === "stopping";
+  // A pending "点击确认" must survive a re-render, or the second tap looks like the
+  // first one again.
+  if (Date.now() > (model.stopConfirmUntil ?? 0)) {
+    stopButton.querySelector("span").textContent = session.status === "stopping" ? "停止中…" : "停止";
+  }
+  stopButton.title = !ownsControl
+    ? "只有当前控制设备可以停止执行"
+    : session.status === "stopping" ? "停止请求已发出，等 Agent 结束本轮" : "停止当前执行";
   renderModelControl(session, ownsControl);
   renderAutoApprove(session);
   renderQueuedMessages(session);
   renderUsage(session);
+  applyConnection();
   void ensureHistory(session.id);
   renderHistoryMore(session.id);
   renderEvents();
@@ -850,6 +888,10 @@ function connectEvents() {
       if (event.kind === "turn.started") session.status = "running";
       if (event.kind === "turn.completed" || event.kind === "turn.cancelled") session.status = "ready";
       if (event.kind === "turn.failed") session.status = "failed";
+      // The cancel is only a request until the Agent ends the turn, so the phone
+      // shows a distinct state instead of either pretending it worked or leaving
+      // the session looking untouched.
+      if (event.kind === "turn.stop_requested") session.status = "stopping";
       if (event.kind === "control.granted") session.controller = event.payload.controller;
       if (event.kind === "model.changed" && session.modelDirectory) session.modelDirectory.current = event.payload.selected;
       if (event.kind === "approval.policy") session.autoApprove = event.payload.autoApprove ?? null;
@@ -943,7 +985,11 @@ $("#stop-session").addEventListener("click", async () => {
   button.classList.remove("confirming");
   button.querySelector("span").textContent = "停止";
   try {
-    await api(`/api/sessions/${model.selectedId}/stop`, { method: "POST", body: JSON.stringify({ commandId: commandId() }) });
+    const result = await api(`/api/sessions/${model.selectedId}/stop`, { method: "POST", body: JSON.stringify({ commandId: commandId() }) });
+    // A stop that could not be delivered is still a stop: the bridge ended the turn
+    // locally, and the person deserves to know that is what happened.
+    if (result?.forced) toast("桌面端没回应停止请求，已直接结束这一轮");
+    await refreshState();
   } catch (error) { toast(error.message); }
 });
 

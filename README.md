@@ -99,6 +99,30 @@ Echo 适配器不接触任何 AI 工具，只验证「CLI → 本机 Bridge → 
 
 任何模式都不要把 TCP 8787 直接映射到公网。Cloudflare 模式额外启用访问密钥闸门（密钥存于 `.agentbridge/access-key`），光有二维码不够。
 
+### 访问密钥：会不会变、怎么换
+
+密钥就是一句口令，不是账号。门禁只在**用 Cloudflare 隧道启动时**打开——其余模式（局域网 / Tailscale / ZeroTier）默认没有门禁，也就不会有人问你密钥。门禁打开时，所有非本机（loopback）请求都必须带上它：二维码里已内嵌 `?key=…`，手机用它换一个 90 天有效的 cookie（`agentbridge_key`）。
+
+**默认是固定的。** `scripts/start-agentbridge.ps1` 里的 `Get-OrCreateAccessKey` 先读 `.agentbridge/access-key`：只要文件存在、内容非空且不短于 16 个字符，就原样复用。所以重启、换端口、换隧道地址都不会改它。会变的情况只有三种：
+
+1. 删掉（或清空、或写短于 16 个字符）`.agentbridge/access-key`；
+2. 换了一份代码目录（文件跟着目录走，不同 `$bridgeRoot` 各有一把）；
+3. 该目录第一次以 Cloudflare 模式启动。
+
+**换法**（三步，不需要改代码）：
+
+```powershell
+scripts\stop-agentbridge.ps1                          # 1. 停桥
+Remove-Item .agentbridge\access-key                   # 2a. 让下次启动生成新串
+# 或者直接写自己的口令（≥16 字符，别加换行）：
+# "my-own-long-passphrase" | Set-Content .agentbridge\access-key -NoNewline -Encoding ascii
+scripts\start-agentbridge.ps1 -CloudflareTunnel       # 3. 启动，窗口会打印新串
+```
+
+换完所有手机都要重新扫码或用新串（旧 cookie 不再匹配）。注意 Cloudflare 模式下脚本会**无条件**用文件里的值覆盖 `AGENTBRIDGE_ACCESS_KEY` 环境变量，所以“只设环境变量”在那里不管用——想自定义口令就写进文件；非隧道模式下才是靠环境变量。
+
+`.agentbridge/` 已在 `.gitignore` 中，密钥不会进版本库；但也别把带 `?key=` 的完整链接贴到公开场合。推送通知的跳转链接默认**不带**密钥（`notifyLink` 需要显式开启），所以换钥匙不会影响通知。
+
 ## 让 Agent 支持 `/phone`
 
 `/phone` 不是 Agent 自带的功能，而是 AgentBridge 往对应客户端里装的一个**技能**（一个 `SKILL.md` 文件）。它只做一件事：在**当前项目目录**里调用 `agentbridge phone --agent <id>`，由 CLI 确保 Bridge 在运行、创建或附加会话、打印一次性二维码。
@@ -142,17 +166,29 @@ node .\bin\agentbridge.js phone --agent codex --session <thread-id>
 
 前提：DSH Desktop 已安装，且存在桌面 profile `%USERPROFILE%\.dsh\profiles\desktop\package.json`（或由 `DSH_HOME` 指定）。
 
+**从插件市场装（普通用户）**：设置 → 插件市场 → 发现，搜 `AgentBridge` 或 `@chenacc/dsh-agentbridge` → 安装 → 重启 DSH Desktop。等价的命令行安装：
+
+```powershell
+cd "$env:USERPROFILE\.dsh\profiles\desktop"; pnpm add @chenacc/dsh-agentbridge@latest
+```
+
+**从本地源码装（开发者）**：
+
 ```powershell
 npm run install:dsh-phone
 ```
 
-这条命令只改 `%USERPROFILE%\.dsh`：把插件复制进 profile 的 `node_modules`、在 profile 的 `package.json` 里登记 `@agentbridge/dsh-phone` 并加入 `dsh.profile.bundles`，同时留一份 `package.json.agentbridge-backup`；**不会**改动 `DSH Desktop.exe` 或 `app.asar`。装完重启 DSH Desktop，在项目会话里输入 `/phone`。
+这条命令只改 `%USERPROFILE%\.dsh`：把插件复制进 profile 的 `node_modules`、在 profile 的 `package.json` 里登记 `@chenacc/dsh-agentbridge` 并加入 `dsh.profile.bundles`，同时留一份 `package.json.agentbridge-backup`；**不会**改动 `DSH Desktop.exe` 或 `app.asar`。装完重启 DSH Desktop，在项目会话里输入 `/phone`。
+
+> 两种装法别同时用：同一插件名同时存在于本地 `file:` 层和 npm 层时，重启后只有一个会生效。
 
 这是唯一能**精确绑定屏幕上那条会话**的入口（会话 ID、目录、provider、模型都取自真实会话）。卸载：
 
 ```powershell
 npm run uninstall:dsh-phone
 ```
+
+发布到插件市场的完整流程见 [`docs/PUBLISHING.md`](./docs/PUBLISHING.md)。
 
 ### DeepSeek Harness（CLI / ACP）
 

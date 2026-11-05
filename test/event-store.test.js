@@ -21,6 +21,25 @@ test("event store persists monotonic sequence and resumes", async (t) => {
   const event = await restored.append("three", {});
   assert.equal(event.seq, 3);
 });
+test("an event store whose log was cut mid-line still opens and keeps appending", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-events-torn-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "events.jsonl");
+  const first = new EventStore({ filePath });
+  await first.init();
+  await first.append("one", { value: 1 }, { sessionId: "s1" });
+  await first.append("two", { value: 2 }, { sessionId: "s1" });
+  // A bridge killed in the middle of an append leaves exactly this: a complete line
+  // followed by half of the next one. Refusing to start would mean the log itself
+  // keeps the bridge down, which is the worst possible failure mode.
+  await appendFile(filePath, '{"v":1,"eventId":"torn-cut-by-kill","seq":3,"kind":"mess', "utf8");
+
+  const restored = new EventStore({ filePath });
+  await restored.init();
+  assert.deepEqual(restored.listAfter(0).map((event) => event.kind), ["one", "two"]);
+  const event = await restored.append("three", {});
+  assert.equal(event.seq, 3, "the sequence resumes from the last complete event");
+});
 test("event store recovers its append queue after a transient write failure", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agentbridge-events-retry-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

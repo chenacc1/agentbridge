@@ -1,7 +1,8 @@
 {
-  "name": "@agentbridge/dsh-phone",
+  "name": "@chenacc/dsh-agentbridge",
   "version": "0.1.0",
-  "private": true,
+  "description": "AgentBridge for DSH Desktop: run /phone in a conversation to pair a phone console with that exact live Agent.",
+  "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -9,8 +10,34 @@
   },
   "files": [
     "lib/index.js",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
   ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh-desktop",
+    "agentbridge",
+    "phone",
+    "remote-control",
+    "qr-pairing"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chenacc1/agentbridge.git",
+    "directory": "integrations/dsh-phone"
+  },
+  "homepage": "https://github.com/chenacc1/agentbridge/tree/main/integrations/dsh-phone#readme",
+  "bugs": {
+    "url": "https://github.com/chenacc1/agentbridge/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -19,5 +46,13 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-commands": "^0.1.0-rc.7",
     "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
   }
 }

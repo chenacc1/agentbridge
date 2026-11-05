@@ -1,4 +1,4 @@
-﻿/* AgentBridge — sx-glass L2 皮肤
+/* AgentBridge — sx-glass L2 皮肤
    设计参数来源：D:\ocean-glass-ui\sx-glass-component-kit-v2.html
    核心配方：132.39° 白灰渐变玻璃 + blur(13.44px) saturate(135%)
    + 8 层拟态阴影 + ::before Rim 描边 + ::after 顶部光环
@@ -64,6 +64,14 @@
 }
 
 * { box-sizing: border-box; }
+/* Android / 微信 webview 的"文字自动放大"（text autosizing）会把成块的正文文字放大，
+   而本项目大量使用 nowrap 的徽标与标签——文字被放大后比容器还宽，整页就横着顶出屏幕
+   （真机上标题、模型行、输入框一起被切掉，桌面上永远复现不出来）。这里显式关掉自动放大，
+   再配合 `.session-view` 的可收缩网格列兜底。 */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 html, body { min-height: 100%; overflow-x: hidden; }
 /* 底色放在 html 上、body 保持透明：html 带 overflow:hidden 时 body 的背景不再传播到画布，
    而是被当成普通盒子背景绘制——普通盒子的背景会盖住 z-index 为负的固定层，
@@ -316,6 +324,9 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 /* 会话列表：sx-list 配方 */
 .status-mark { width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--ink-3); }
 .status-mark.running, .status-mark.starting { background: var(--warn); }
+/* 停止中 is still an open turn, only with its end requested: the same warning
+   family, a step quieter so the two states read differently at a glance. */
+.status-mark.stopping { background: var(--warn); opacity: .55; }
 .status-mark.ready { background: var(--ok); }
 .status-mark.failed, .status-mark.offline { background: var(--err); }
 
@@ -327,12 +338,17 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .empty-state p { max-width: 52ch; margin: 0; color: var(--ink-2); line-height: 1.7; }
 /* 行号必须钉死。会话视图里有一个"有时才出现"的子元素（加载更早），靠自动放置的话
    它一出现就顶替掉 1fr 那一行：加载条被撑成 320px 的巨型胶囊，日志反而被挤到 auto 行
-   （撑不到应有的高度）。显式 grid-row 让可选子元素的出现/消失不影响日志拿到 1fr。 */
-.session-view { min-height: calc(100vh - 120px); min-height: calc(100dvh - 120px); display: grid; grid-template-rows: auto auto minmax(320px, 1fr) auto; }
+   （撑不到应有的高度）。显式 grid-row 让可选子元素的出现/消失不影响日志拿到 1fr。
+   列也必须写成 minmax(0, 1fr)：隐式 auto 列的下限是 min-content，头部那串 nowrap 徽标
+   （DEEPSPEK-HARNESS-DESKTOP + LOCAL-BOUJOY-HARNESS-MAIN-…）会把它顶到 356px，
+   于是整个会话视图比手机屏还宽——标题、模型行、输入框一起被切在屏幕外。 */
+.session-view { min-height: calc(100vh - 120px); min-height: calc(100dvh - 120px); display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(320px, 1fr) auto; }
 .session-view > .session-header { grid-row: 1; }
 .session-view > .history-more { grid-row: 2; }
 .session-view > .event-log { grid-row: 3; }
 .session-view > .composer { grid-row: 4; }
+/* 头部子元素允许收缩：超出的 nowrap 文本由自己裁掉，而不是把整列顶宽。 */
+.session-header > * { min-width: 0; }
 .session-header { padding: 24px 0 22px 4px; display: flex; justify-content: space-between; gap: 24px; align-items: flex-end; }
 .session-header h2 { margin: 5px 0; font-size: clamp(24px, 4vw, 38px); letter-spacing: -.035em; font-weight: 800; font-style: italic; color: var(--ink); }
 .session-error { max-width: 720px; margin: 10px 0 0; padding: 12px 14px; border-radius: 18px; background: linear-gradient(176deg, rgba(255,255,255,0.55), rgba(215,120,120,0.4)); box-shadow: var(--mini-shadow); border: 1px solid rgba(220,60,60,0.35); color: var(--err); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
@@ -737,6 +753,10 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
   .session-view { min-height: calc(100vh - 132px); min-height: calc(100dvh - 132px); }
   /* 会话头压缩：标题最多两行、meta 单行省略，把首屏让给对话 */
   .session-header { padding: 12px 14px 10px; align-items: flex-start; flex-direction: column; gap: 10px; }
+  /* 纵向堆叠时 align-items:flex-start 会让子块按"内容宽度"布局，而头部的项目徽标是
+     nowrap 的（DEEPSPEK-HARNESS-DESKTOP + LOCAL-BOUJOY-HARNESS-MAIN-…），内容宽度
+     328px > 手机可用宽度，整块就顶出屏幕。让子块撑满并允许收缩，徽标自己省略。 */
+  .session-header > * { width: 100%; min-width: 0; }
   .session-header h2 { margin: 2px 0; font-size: 19px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .session-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .session-meta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

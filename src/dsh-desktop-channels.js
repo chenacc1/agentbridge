@@ -3,6 +3,15 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 // Applied sequence numbers are remembered so replaying a batch is a no-op.
 const MAX_APPLIED_SEQ = 20_000;
 
+// A paired companion polls this bridge every 800 ms, so "nothing heard for this
+// long" means the desktop side is gone: the app was closed or restarted, or the
+// conversation stopped running /phone. The channel object survives in this
+// process either way, and a command queued into it is never read by anyone.
+// Before this bound existed, a restart of the desktop app left every command
+// silently swallowed while `isOnline` kept answering "connected" — the phone
+// showed 执行中 forever and its stop button could not clear it.
+const CHANNEL_STALE_MS = 45_000;
+
 function httpError(message, statusCode) {
   return Object.assign(new Error(message), { statusCode });
 }
@@ -64,14 +73,14 @@ export class DshDesktopChannelManager {
   #createRequests = new Map();
 
   /**
-   * Is any DSH Desktop conversation currently paired?
+   * Is any DSH Desktop conversation currently paired and actually polling?
    *
    * Creating a conversation from the phone has to happen inside the desktop app,
    * so the capability is only real while a companion is polling.
    */
   hasOnlineChannel() {
     for (const state of this.#byProvider.values()) {
-      if (state.channelId && !state.closed) return true;
+      if (this.#live(state)) return true;
     }
     return false;
   }
@@ -85,8 +94,24 @@ export class DshDesktopChannelManager {
    */
   isOnline(providerSessionId) {
     if (typeof providerSessionId !== "string" || !providerSessionId) return false;
-    const state = this.#byProvider.get(providerSessionId);
-    return Boolean(state && !state.closed && state.channelId);
+    return this.#live(this.#byProvider.get(providerSessionId));
+  }
+
+  /**
+   * A channel is only usable while its companion keeps polling.
+   *
+   * `lastSeenAt` is refreshed by every poll (and by every other authenticated
+   * call), so this is the real heartbeat of the desktop side — not `closed`,
+   * which only flips when the bridge itself tears the channel down.
+   */
+  #live(state) {
+    if (!state || state.closed || !state.channelId) return false;
+    return Date.now() - (state.lastSeenAt ?? 0) < CHANNEL_STALE_MS;
+  }
+
+  /** The one sentence that fixes a dead channel, shared by every refusal below. */
+  static staleReason() {
+    return "桌面端这个会话没有在响应（DSH Desktop 关过或重启过，或者那个对话没有运行 /phone）：请在那台电脑的 DSH Desktop 里打开该会话执行 /phone，手机会自己接回来";
   }
 
   /**
@@ -103,9 +128,8 @@ export class DshDesktopChannelManager {
     }
     let carrier = null;
     for (const state of this.#byProvider.values()) {
-      if (state.channelId && !state.closed) {
-        if (!carrier || state.lastSeenAt > carrier.lastSeenAt) carrier = state;
-      }
+      if (!this.#live(state)) continue;
+      if (!carrier || state.lastSeenAt > carrier.lastSeenAt) carrier = state;
     }
     if (!carrier) {
       throw httpError("DSH Desktop 桌面端离线：请先在 DSH Desktop 的对话里运行 /phone，再回来新建", 409);
@@ -235,8 +259,8 @@ export class DshDesktopChannelManager {
     // which said nothing about what to do. A DSH Desktop conversation is driven through
     // the desktop app, so the one action that fixes it is running /phone there — and the
     // companion reconnects by itself once it is running the current integration.
-    if (!state || state.closed) {
-      throw httpError("桌面端没有连上这个会话：请在这台电脑的 DSH Desktop 里打开该会话并执行 /phone（桌面端已在运行的话，几秒后会自动接回）", 409);
+    if (!this.#live(state)) {
+      throw httpError(DshDesktopChannelManager.staleReason(), 409);
     }
     state.bridge = bridge;
     return state;
@@ -246,12 +270,13 @@ export class DshDesktopChannelManager {
    *
    * `stale` means a desktop is running an older copy of the integration than this
    * bridge expects — the fix is `npm run install:dsh-phone` plus a DSH restart, which
-   * is worth telling the user before they debug a missing feature.
+   * is worth telling the user before they debug a missing feature. Only live
+   * channels count: a companion that stopped polling cannot claim anything.
    */
-  integrationStatus({ required = 5 } = {}) {
+  integrationStatus({ required = 6 } = {}) {
     const versions = [];
     for (const state of this.#byProvider.values()) {
-      if (state.channelId && !state.closed && Number.isSafeInteger(state.integrationVersion)) {
+      if (this.#live(state) && Number.isSafeInteger(state.integrationVersion)) {
         versions.push(state.integrationVersion);
       }
     }
@@ -274,8 +299,12 @@ export class DshDesktopChannelManager {
 
   enqueue(providerSessionId, command) {
     const state = this.#byProvider.get(providerSessionId);
-    if (!state || state.closed || !state.channelId) {
-      throw httpError("桌面端这个会话还没连上：请在这台电脑的 DSH Desktop 里打开该会话执行 /phone", 409);
+    // A command accepted for a companion that stopped polling is lost without a
+    // trace: it sits in `state.commands` until a poll that never comes. Refusing it
+    // here is what turns "the phone is stuck in 执行中" into a sentence the person
+    // can act on.
+    if (!this.#live(state)) {
+      throw httpError(DshDesktopChannelManager.staleReason(), 409);
     }
     const queued = {
       seq: ++state.nextCommandSeq,
@@ -288,8 +317,8 @@ export class DshDesktopChannelManager {
 
   request(providerSessionId, command, timeoutMs = 15_000) {
     const state = this.#byProvider.get(providerSessionId);
-    if (!state || state.closed || !state.channelId) {
-      throw httpError("桌面端这个会话还没连上：请在这台电脑的 DSH Desktop 里打开该会话执行 /phone", 409);
+    if (!this.#live(state)) {
+      throw httpError(DshDesktopChannelManager.staleReason(), 409);
     }
     const requestId = randomUUID();
     const queued = this.enqueue(providerSessionId, { ...command, requestId });

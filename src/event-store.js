@@ -71,7 +71,16 @@ export class EventStore {
     let lastSeq = 0;
     for (const line of content.split(/\r?\n/)) {
       if (!line) continue;
-      const event = JSON.parse(line);
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        // A process that was killed mid-append leaves one torn line at the tail.
+        // Refusing to start over that would make the log itself the reason the
+        // bridge cannot come back — every read path below already skips unparsable
+        // lines, and the event they describe was never acknowledged anyway.
+        continue;
+      }
       if (Number.isSafeInteger(event.seq)) lastSeq = Math.max(lastSeq, event.seq);
       retain(this.#events, this.#deltaByTurn, event);
       while (this.#events.length > this.maxMemory) this.#evictOldest();

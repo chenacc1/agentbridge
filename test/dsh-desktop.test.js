@@ -93,6 +93,28 @@ test("DSH Desktop durable events map to the mobile conversation once", async () 
   assert.equal(replay.accepted, 0);
 });
 
+// A turn that dies mid-flight (dropped model connection, provider failure) used to be
+// reported as "本轮已完成". The phone then showed the user's message, a few tool rows and
+// a finished turn — with no answer and nothing saying anything had gone wrong.
+test("a turn that ends in an error reaches the phone as a failure, not as a finished turn", async () => {
+  const channels = new DshDesktopChannelManager();
+  const channel = registration(channels);
+  const adapter = new DshDesktopAdapter({ channels });
+  const emitted = [];
+  await adapter.attach({ emit: async (kind, payload, extra) => emitted.push({ kind, payload, extra }) }, channel.providerSessionId);
+
+  await channels.ingest(channel.id, channel.token, [
+    { event: { type: "turn/end", seq: 11, time: 11, data: { turn: 3, reason: { kind: "error", error: { message: "Connection error.", code: "TRANSPORT" } } } }, origin: "desktop" },
+    { event: { type: "turn/end", seq: 12, time: 12, data: { turn: 4, reason: { kind: "cancelled" } } }, origin: "desktop" },
+    { event: { type: "turn/end", seq: 13, time: 13, data: { turn: 5, reason: { kind: "error" } } }, origin: "desktop" },
+  ]);
+
+  assert.deepEqual(emitted.map((event) => event.kind), ["turn.failed", "turn.cancelled", "turn.failed"]);
+  assert.equal(emitted[0].payload.error, "Connection error.（TRANSPORT）", "the phone needs the real reason, not just 'failed'");
+  assert.equal(emitted[0].payload.reason.kind, "error", "the raw reason stays available for diagnostics");
+  assert.ok(emitted[2].payload.error.length > 0, "an error without a message still has to say something");
+});
+
 test("DSH Desktop model selection waits for a real companion confirmation", async () => {
   const channels = new DshDesktopChannelManager();
   const channel = registration(channels);

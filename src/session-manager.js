@@ -68,6 +68,45 @@ const MAX_AUTO_APPROVE_MS = 30 * 60_000;
 // A queue is a convenience, not a mailbox: five messages is already a lot to hold.
 const MAX_QUEUED_MESSAGES = 5;
 
+// How long a dispatched turn may produce nothing at all before the bridge decides
+// the Agent never picked it up.
+//
+// `send` marks the session running *before* the adapter is asked to do anything,
+// and only an event from the Agent clears that mark. When nothing ever comes back
+// — a desktop app that was restarted, a conversation that no longer exists, a
+// provider process that died before its first frame — the mark used to stay
+// forever: the phone showed 执行中 with a dead composer, the stop button asked a
+// ghost to cancel, and even the safe shutdown was refused because the session
+// still looked busy. Every adapter here emits `turn.started` (or at least its first
+// delta/tool event) within seconds, so a minute of complete silence is not a slow
+// model, it is a turn that never started.
+const DEFAULT_TURN_ACK_MS = 60_000;
+
+// How long a stop request may go unanswered before the bridge ends the turn itself.
+// The desktop companion polls every 800 ms, so a healthy agent echoes `turn/end`
+// almost immediately; this bound exists so a phone can always get its input back.
+const DEFAULT_STOP_ACK_MS = 20_000;
+
+// Any of these means the Agent is alive inside the turn the bridge is watching, so
+// the turn-acknowledgement watchdog is satisfied.
+const PROGRESS_KINDS = new Set([
+  "turn.started",
+  "message.delta",
+  "message.completed",
+  "adapter.output",
+  "tool.started",
+  "tool.completed",
+  "approval.requested",
+  "input.requested",
+  "turn.completed",
+  "turn.cancelled",
+  "turn.failed",
+]);
+
+// Turn ends are the only events that release `running`, so they also release every
+// watchdog watching for them.
+const TURN_END_KINDS = new Set(["turn.completed", "turn.cancelled", "turn.failed"]);
+
 const NOTIFY_KINDS = new Set([
   "approval.requested",
   "input.requested",
@@ -205,6 +244,10 @@ export class SessionManager {
   #deltas = new Map();
   // Messages typed while a turn is running wait here instead of failing with 409.
   #queues = new Map();
+  // Watches for the two ways a turn can leave the bridge waiting forever: an Agent
+  // that never picked the message up, and a stop request nobody answers.
+  #acks = new Map();
+  #stopWatchdogs = new Map();
 
   constructor({
     eventStore,
@@ -217,6 +260,8 @@ export class SessionManager {
     deltaFlushMs = 120,
     notifier = null,
     attachments = null,
+    turnAckMs = DEFAULT_TURN_ACK_MS,
+    stopAckMs = DEFAULT_STOP_ACK_MS,
   }) {
     this.eventStore = eventStore;
     this.registry = registry;
@@ -228,6 +273,8 @@ export class SessionManager {
     this.attachments = attachments;
     this.controlTtlMs = controlTtlMs;
     this.deltaFlushMs = deltaFlushMs;
+    this.turnAckMs = Number.isFinite(turnAckMs) && turnAckMs > 0 ? turnAckMs : DEFAULT_TURN_ACK_MS;
+    this.stopAckMs = Number.isFinite(stopAckMs) && stopAckMs > 0 ? stopAckMs : DEFAULT_STOP_ACK_MS;
     for (const record of this.conversationCatalog?.list() ?? []) {
       this.#sessions.set(record.id, this.#sessionFromRecord(record));
     }
@@ -260,6 +307,8 @@ export class SessionManager {
 
     const failures = [];
     for (const session of this.#sessions.values()) {
+      this.#clearAck(session.id);
+      this.#clearStopWatchdog(session.id);
       await this.#flushDelta(session.id);
       if (session.handle && typeof session.adapter?.dispose === "function") {
         try {
@@ -526,7 +575,9 @@ export class SessionManager {
       }
       // A busy agent is not an error: the message waits its turn and the phone can
       // show the queue, which is how a person actually types while the agent works.
-      if (session.status === "running") {
+      // `stopping` counts as busy for the same reason — the turn it would queue
+      // behind is the one being cancelled, and it leaves as soon as that lands.
+      if (session.status === "running" || session.status === "stopping") {
         const queue = this.#queueOf(session);
         if (queue.length >= MAX_QUEUED_MESSAGES) {
           throw Object.assign(new Error(`排队已满（${MAX_QUEUED_MESSAGES} 条），等这一轮结束后再发`), { statusCode: 429 });
@@ -596,14 +647,39 @@ export class SessionManager {
           code: "ADAPTER_CAPABILITY_UNSUPPORTED",
         });
       }
-      if (session.status !== "running" || !session.handle) {
+      if (!["running", "stopping"].includes(session.status) || !session.handle) {
         throw Object.assign(new Error("There is no active Agent turn to stop"), { statusCode: 409 });
       }
-      const stopped = await session.adapter.stop(session.handle);
-      await this.#emit(session, "turn.stop_requested", { stopped: Boolean(stopped) }, {
+      // Delivering the cancel can fail for a reason the user cannot fix by tapping
+      // again (the desktop app that owns this conversation is gone). That failure
+      // must not leave the phone holding a session that is running forever, so it is
+      // caught here and answered with a local end-of-turn instead of a bare error.
+      let stopped = false;
+      let failure = null;
+      try {
+        stopped = Boolean(await session.adapter.stop(session.handle));
+      } catch (error) {
+        failure = error;
+      }
+      await this.#emit(session, "turn.stop_requested", {
+        stopped,
+        ...(failure ? { delivered: false, error: String(failure.message ?? failure).slice(0, 500) } : {}),
+      }, {
         actor: { type: "user", deviceId: device.id, deviceName: device.deviceName },
       });
-      return { stopped: Boolean(stopped) };
+      if (failure) {
+        await this.#forceCancel(session, `停止请求没有送达（${String(failure.message ?? failure).slice(0, 200)}），桥已直接结束这一轮`);
+        return { stopped: false, forced: true };
+      }
+      // The request is out. Until the Agent echoes `turn/end` the turn is still
+      // live, so the phone shows 停止中 rather than pretending it is already over.
+      // Ownership of the outcome moves to the stop watchdog: an unanswered stop is
+      // reported as a stop, not as "the Agent never started".
+      this.#clearAck(session.id);
+      session.status = "stopping";
+      session.updatedAt = new Date().toISOString();
+      this.#armStopWatchdog(session);
+      return { stopped: true };
     });
   }
 
@@ -611,7 +687,7 @@ export class SessionManager {
     return this.#idempotent(commandId, async () => {
       const session = this.#requireSession(sessionId);
       this.#requireControl(session, device);
-      if (session.status === "running") throw Object.assign(new Error("Wait for the current Agent turn to finish before changing models"), { statusCode: 409 });
+      if (session.status === "running" || session.status === "stopping") throw Object.assign(new Error("Wait for the current Agent turn to finish before changing models"), { statusCode: 409 });
       if (!session.handle || typeof session.adapter.selectModel !== "function") {
         throw Object.assign(new Error("This Agent session does not support changing models from AgentBridge"), { statusCode: 501 });
       }
@@ -850,6 +926,11 @@ export class SessionManager {
 
   async #emit(session, kind, payload, extra = {}) {
     if (kind === "message.delta") return this.#queueDelta(session, payload, extra);
+    // Anything the Agent says after a dispatch proves it picked the turn up, and a
+    // turn end is the only thing that can release `running` — so both watchdogs are
+    // disarmed here, before the state machine below runs.
+    if (PROGRESS_KINDS.has(kind)) this.#clearAck(session.id);
+    if (TURN_END_KINDS.has(kind)) this.#clearStopWatchdog(session.id);
     // Any other event must land after the deltas that preceded it, or the phone
     // would render a completed message before its own streamed prefix.
     await this.#flushDelta(session.id);
@@ -1079,8 +1160,87 @@ export class SessionManager {
       actor: { type: "user", deviceId: device.id, deviceName: device.deviceName },
     });
     const emit = (kind, payload, extra = {}) => this.#emitQuietly(session, kind, payload, extra);
+    // Armed after the user's own message is recorded (that event must not count as
+    // the Agent answering) and before the adapter is asked to run, so a dispatch
+    // that produces nothing at all cannot hold `running` indefinitely.
+    this.#armAck(session);
     void Promise.resolve(session.adapter.send(session.handle, { text, attachments, emit, commandId }))
       .catch((error) => this.#emitQuietly(session, "turn.failed", { error: error.message }));
+  }
+
+  /**
+   * Look for the Agent's first sign of life after a dispatch.
+   *
+   * The phone has no way to distinguish "thinking hard" from "the message never
+   * arrived", so the bridge has to make that call: silence for `turnAckMs` with the
+   * session still marked running means the turn never started, and the person's
+   * input comes back with an explanation instead of a frozen composer.
+   */
+  #armAck(session) {
+    this.#clearAck(session.id);
+    const timer = setTimeout(() => {
+      this.#acks.delete(session.id);
+      const live = this.#sessions.get(session.id);
+      // A turn already being stopped is the stop watchdog's business: reporting
+      // "never started" there would overwrite a stop the person explicitly asked for.
+      if (!live || live.status !== "running") return;
+      const seconds = Math.round(this.turnAckMs / 1000);
+      void this.#emitQuietly(live, "turn.failed", {
+        error: `Agent 没有开始执行这一轮（${seconds} 秒内没有任何回应），已释放输入。请确认那台电脑上的 Agent 还连着这个会话，再重新发送。`,
+        code: "TURN_ACK_TIMEOUT",
+      });
+    }, this.turnAckMs);
+    timer.unref?.();
+    this.#acks.set(session.id, timer);
+  }
+
+  #clearAck(sessionId) {
+    const timer = this.#acks.get(sessionId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.#acks.delete(sessionId);
+  }
+
+  /**
+   * Watch a stop request that has been delivered but not answered.
+   *
+   * A cancel is a request, not a state change: only the Agent's own `turn/end`
+   * releases the turn. When that echo never arrives the phone would sit in 停止中
+   * with no way out, which is the exact shape of the bug that motivated this.
+   */
+  #armStopWatchdog(session) {
+    this.#clearStopWatchdog(session.id);
+    const timer = setTimeout(() => {
+      this.#stopWatchdogs.delete(session.id);
+      const live = this.#sessions.get(session.id);
+      if (!live || live.status !== "stopping") return;
+      void this.#forceCancel(live, "Agent 没有回应停止请求，桥已直接结束这一轮");
+    }, this.stopAckMs);
+    timer.unref?.();
+    this.#stopWatchdogs.set(session.id, timer);
+  }
+
+  #clearStopWatchdog(sessionId) {
+    const timer = this.#stopWatchdogs.get(sessionId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.#stopWatchdogs.delete(sessionId);
+  }
+
+  /**
+   * End a turn locally, without the Agent's cooperation.
+   *
+   * Reported as `turn.cancelled` with `reason.kind = "forced"` so the transcript
+   * stays honest about *why* a turn nobody answered stopped: the person asked for
+   * it, and the bridge finished the job the Agent never acknowledged.
+   */
+  async #forceCancel(session, note) {
+    this.#clearAck(session.id);
+    this.#clearStopWatchdog(session.id);
+    if (!["running", "stopping"].includes(session.status)) return;
+    await this.#emitQuietly(session, "turn.cancelled", {
+      reason: { kind: "forced", note },
+    }, { turnId: session.activeTurnId ?? undefined });
   }
 
   /**
@@ -1122,7 +1282,7 @@ export class SessionManager {
   async #drainQueue(session) {
     const queue = this.#queues.get(session.id);
     if (!queue?.length) return;
-    if (session.status === "running") return;
+    if (session.status === "running" || session.status === "stopping") return;
     const next = queue.shift();
     try {
       await this.#emit(session, "message.dequeued", { commandId: next.commandId, remaining: queue.length }, {

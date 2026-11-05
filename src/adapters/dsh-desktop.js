@@ -107,8 +107,25 @@ export async function dshEventToBridge(record, state, emit) {
       }, extra);
     case "turn/end": {
       const kind = data.reason?.kind;
-      const bridgeKind = kind === "cancelled" || kind === "interrupted" ? "turn.cancelled" : "turn.completed";
-      return emit(bridgeKind, { reason: data.reason, dshEventSeq: event.seq }, extra);
+      if (kind === "cancelled" || kind === "interrupted") {
+        return emit("turn.cancelled", { reason: data.reason, dshEventSeq: event.seq }, extra);
+      }
+      // A turn can end in an error — a dropped model connection, a provider failure, a
+      // broken transport. This used to fall through to `turn.completed`, so a turn that
+      // produced no answer at all was reported to the phone as "本轮已完成": the person
+      // saw their message, some tool rows, "completed", and no reply, with nothing
+      // anywhere saying the run had failed.
+      if (kind === "error") {
+        const failure = data.reason?.error;
+        const message = typeof failure === "string" ? failure : failure?.message;
+        const code = typeof failure === "object" && failure ? failure.code : undefined;
+        return emit("turn.failed", {
+          ...(message ? { error: code ? `${message}（${code}）` : message } : { error: "Agent 的回合异常结束，没有产出回复" }),
+          reason: data.reason,
+          dshEventSeq: event.seq,
+        }, extra);
+      }
+      return emit("turn.completed", { reason: data.reason, dshEventSeq: event.seq }, extra);
     }
     default:
       return undefined;

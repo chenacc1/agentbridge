@@ -44,3 +44,5 @@ docs/liquid-glass-ui-components.html
 docs/assets/agentbridge-workspaces-desktop.png
 docs/assets/agentbridge-workspaces-mobile.png
 scripts/verify-product-guide.mjs
+
+.tmp-gh-ca.pem
