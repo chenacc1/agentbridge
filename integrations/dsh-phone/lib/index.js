@@ -45,6 +45,36 @@ function textFromError(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Whether the bridge was simply not there.
+ *
+ * The distinction matters for the message the user sees: a refused connection
+ * means the plugin loaded fine and only the local bridge is missing, which is a
+ * setup step — while a 401 from a live bridge is a different problem entirely.
+ */
+function isBridgeAbsent(error) {
+  const cause = error && typeof error === "object" ? error.cause?.code ?? "" : "";
+  return /ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT|fetch failed|socket hang up/i
+    .test(`${textFromError(error)} ${cause}`);
+}
+
+/** The setup steps a user needs when /phone finds nothing listening. */
+function bridgeSetupText(origin) {
+  return [
+    `无法连接 AgentBridge 桥（${origin}）。插件本身已经加载，缺的是电脑上这个本地服务。`,
+    "",
+    "在电脑上开一个终端，第一次使用时依次执行：",
+    "1) git clone https://github.com/chenacc1/agentbridge.git",
+    "2) cd agentbridge && npm install",
+    "3) npm start",
+    "",
+    "已经下载过这个仓库的话，进到那个目录执行 npm start 就行。",
+    `桥启动后终端里会打印 ${origin}，那时再敲一次 /phone。`,
+    "",
+    "桥不在默认端口的话，先设置环境变量 AGENTBRIDGE_ORIGIN 指向实际地址，再重启 DSH Desktop。",
+  ].join("\n");
+}
+
 function clipped(value, limit) {
   return typeof value === "string" ? value.slice(0, limit) : "";
 }
@@ -817,9 +847,12 @@ function apply(ctx) {
           ].join("\n\n"),
         };
       } catch (error) {
+        const origin = String(process.env.AGENTBRIDGE_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, "");
         return {
           kind: "error",
-          text: `无法连接 AgentBridge：${textFromError(error)}。请确认本机 http://127.0.0.1:8787 正在运行。`,
+          text: isBridgeAbsent(error)
+            ? bridgeSetupText(origin)
+            : `无法连接 AgentBridge：${textFromError(error)}。请确认本机 ${origin} 正在运行。`,
         };
       }
     },

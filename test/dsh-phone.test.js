@@ -705,3 +705,66 @@ test("a question card that fails to post is retried instead of dropped", async (
   assert.equal(delivered[0].questions.length, 1);
   assert.equal(interactionsPosts, 2, "the first attempt failed and the second succeeded");
 });
+
+test("/phone tells the user how to start the bridge when nothing is listening", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalOrigin = process.env.AGENTBRIDGE_ORIGIN;
+  // Node's fetch wraps the socket error, exactly like a bridge that is not running.
+  globalThis.fetch = async () => {
+    const error = new TypeError("fetch failed");
+    error.cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:8787"), { code: "ECONNREFUSED" });
+    throw error;
+  };
+  delete process.env.AGENTBRIDGE_ORIGIN;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalOrigin === undefined) delete process.env.AGENTBRIDGE_ORIGIN;
+    else process.env.AGENTBRIDGE_ORIGIN = originalOrigin;
+  });
+
+  let command;
+  apply({
+    on() {},
+    commands: { register(value) { command = value; } },
+    apiProxy: { sessions: { async models() { throw new Error("unused"); } } },
+    logger: { warn() {} },
+  });
+
+  const result = await command.handler({
+    agent: { session: { id: "dsh-no-bridge", header: { cwd: "D:\\work", title: "Untitled" } }, options: {} },
+  });
+
+  assert.equal(result.kind, "error");
+  // The point of the message: it must say the plugin loaded and name the missing
+  // service, then hand over commands the user can paste as-is.
+  assert.match(result.text, /插件本身已经加载/);
+  assert.match(result.text, /http:\/\/127\.0\.0\.1:8787/);
+  assert.match(result.text, /git clone https:\/\/github\.com\/chenacc1\/agentbridge\.git/);
+  assert.match(result.text, /npm install/);
+  assert.match(result.text, /npm start/);
+  assert.match(result.text, /AGENTBRIDGE_ORIGIN/);
+});
+
+test("/phone keeps the raw error when the bridge is up but rejects the request", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ error: "Invalid DSH Desktop pairing" }, { status: 400 });
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  let command;
+  apply({
+    on() {},
+    commands: { register(value) { command = value; } },
+    apiProxy: { sessions: { async models() { throw new Error("unused"); } } },
+    logger: { warn() {} },
+  });
+
+  const result = await command.handler({
+    agent: { session: { id: "dsh-bridge-rejects", header: { cwd: "D:\\work", title: "Untitled" } }, options: {} },
+  });
+
+  assert.equal(result.kind, "error");
+  // A live bridge that refuses is not a setup problem, so the setup guide must
+  // not be shown — the message has to carry what the bridge actually said.
+  assert.doesNotMatch(result.text, /git clone/);
+  assert.match(result.text, /Invalid DSH Desktop pairing|无法连接 AgentBridge/);
+});
