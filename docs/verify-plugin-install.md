@@ -48,12 +48,13 @@ npm run uninstall:dsh-phone   # 现在会同时清理新旧两个名字
 
 ## 第 2 层：插件是否被 DSH 加载
 
-重启 DSH Desktop，在一个**项目会话**里输入 `/phone`。三种结果的含义完全不同：
+重启 DSH Desktop，在一个**项目会话**里输入 `/phone`。**故意先不要启动桥**，这样能一次验两件事：插件加载了、并且失败时给的是指路信息而不是干瞪眼。
 
 | 看到什么 | 说明 | 下一步 |
 |---|---|---|
-| 弹出二维码 + 配对链接 | 插件加载成功，桥也在跑，端到端通 | 进入第 3 层 |
-| `无法连接 AgentBridge：fetch failed…` | **插件已加载**，只是桥没起 | 起桥：仓库根 `npm start`，再试 |
+| 一段"插上已经加载，缺的是电脑上这个本地服务" + 三条 `git clone` / `npm install` / `npm start` 命令（0.1.1 起） | 插件加载成功，文案正确 | 起桥后再敲一次 |
+| 弹出二维码 + 配对链接 | 插件加载成功，桥也在跑 | 进入第 3 层 |
+| `无法连接 AgentBridge：<原始错误>`（没有那三条命令） | 插件已加载，但桥在线且拒绝了请求 | 看桥的终端输出，多半是配对码过期或令牌不对 |
 | 命令根本不存在（或被当成普通文本） | 插件没加载 | 查 `dsh.profile.bundles`、`node_modules/@chenacc/dsh-agentbridge` 是否存在、`%APPDATA%\DSH Desktop\logs` 里的报错 |
 
 第二种最容易被误判成"插件坏了"，其实是插件正常工作、只是缺前置。
@@ -98,7 +99,7 @@ pnpm remove @chenacc/dsh-agentbridge
 
 ## 目前的实际状态（2026-11-05）
 
-- 第 0 层：19 项全绿（含 `pnpm add` 实测）；
-- 你的真实 profile 已迁移：旧 `@agentbridge/dsh-phone` 已移除，`@chenacc/dsh-agentbridge@0.1.0` 已装入并写进 `dsh.profile.bundles`；备份在 `package.json.pre-market-backup`；
-- 第 2、3 层：**等你重启 DSH Desktop 后测**；
-- 第 4 层：还没做，且已知断点是"用户还得自己跑桥"。
+- 第 0 层：19 项全绿（含 `pnpm add` 实测），线上 `latest` = `0.1.1`；
+- 你的真实 profile 已迁移并升级：旧 `@agentbridge/dsh-phone` 已移除，`@chenacc/dsh-agentbridge@0.1.1` 已装入并写进 `dsh.profile.bundles`；备份在 `package.json.pre-market-backup`；
+- 第 2、3 层：**等你重启 DSH Desktop 后测**（先不启桥，验 0.1.1 的指路文案；再起桥验二维码）；
+- 第 4 层：还没做，且已知断点是"用户还得自己跑桥"——0.1.1 只是把这条断点讲清楚了，没消除它。

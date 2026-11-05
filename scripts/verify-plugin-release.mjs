@@ -134,14 +134,14 @@ try {
       JSON.stringify({ name: "dsh-profile-desktop", private: true, dependencies: {}, dsh: { profile: { bundles: [] } } }, null, 2),
       "utf8",
     );
-    // 用 shell 调 pnpm：Windows 上 pnpm 是 .cmd，execFile 直连会 EINVAL，
-    // 而 stdio 必须是 inherit——沙箱下管道方式会被拒。
+    // 用一条 shell 命令串调 pnpm：Windows 上 pnpm 是 .cmd，execFile 直连会 EINVAL；
+    // stdio 必须是 inherit——沙箱下管道方式会被拒。
+    const storeDir = path.join(workdir, "store");
     await new Promise((resolve, reject) => {
-      const child = spawn("pnpm", ["add", `${PKG}@${version}`, "--registry", REGISTRY, "--store-dir", path.join(workdir, "store")], {
-        cwd: profile,
-        stdio: "inherit",
-        shell: true,
-      });
+      const child = spawn(
+        `pnpm add "${PKG}@${version}" --registry ${REGISTRY} --store-dir "${storeDir}"`,
+        { cwd: profile, stdio: "inherit", shell: true },
+      );
       child.on("error", reject);
       child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`pnpm add exited ${code}`))));
     }).catch(() => {});
