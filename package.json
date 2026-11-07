@@ -1,30 +1,43 @@
 {
-  "name": "agentbridge-mvp",
+  "name": "@chenacc/agentbridge",
   "version": "0.1.0",
-  "private": true,
+  "description": "Control local coding agents from a phone through a secure WeChat QR web console.",
   "license": "MIT",
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/chenacc1/agentbridge.git"
   },
-  "type": "module",
-  "description": "Use WeChat QR scanning to control local coding agents through a secure mobile web console.",
+  "homepage": "https://github.com/chenacc1/agentbridge#readme",
+  "bugs": {
+    "url": "https://github.com/chenacc1/agentbridge/issues"
+  },
+  "keywords": [
+    "agentbridge",
+    "wechat",
+    "qrcode",
+    "remote-control",
+    "mobile",
+    "claude-code",
+    "codex",
+    "deepseek-harness",
+    "dsh-desktop"
+  ],
   "files": [
     "bin",
     "src",
     "public",
-    "scripts",
-    "integrations/dsh-phone",
     ".env.example",
-    "启动 AgentBridge.cmd",
-    "启动 AgentBridge 远程模式.cmd",
-    "启动 AgentBridge ZeroTier 远程模式.cmd",
-    "启动 AgentBridge Cloudflare 远程模式.cmd",
-    "安全停止 AgentBridge.cmd",
     "docs/RELEASING.md"
   ],
   "bin": {
     "agentbridge": "bin/agentbridge.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "start": "node src/server.js",
@@ -41,13 +54,11 @@
     "verify:attach": "node scripts/verify-attachments.mjs",
     "verify:features": "node scripts/verify-features.mjs",
     "verify:quicknav": "node scripts/verify-quick-nav.mjs",
-    "check": "node --check src/server.js && node --check src/cli.js && node --check src/cc-switch-models.js && node --check src/workspaces/workspace-catalog.js && node --check src/conversations/conversation-catalog.js && node --check src/adapters/capabilities.js && node --check src/adapters/claude.js && node --check src/adapters/codex.js && node --check src/adapters/deepseek-harness.js && node --check src/adapters/dsh-desktop.js && node --check src/dsh-desktop-channels.js && node --check src/event-store.js && node --check src/notifier.js && node --check src/attachments.js && node --check src/session-manager.js && node --check integrations/dsh-phone/lib/index.js && node --check src/adapters/zcode-native.js && node --check public/adapter-capabilities.js && node --check public/workspace-navigation.js && node --check public/markdown.js && node --check public/highlight.js && node --check public/transcript.js && node --check public/app.js && node --check scripts/verify-workspace-ui.mjs && node --check scripts/verify-message-blocks.mjs && node --check scripts/verify-background-scrim.mjs && node --check scripts/verify-model-control.mjs && node --check scripts/verify-notifications.mjs && node --check scripts/verify-attachments.mjs && node --check scripts/verify-features.mjs && node --check scripts/verify-quick-nav.mjs && node --check scripts/verify-questions.mjs && node --check scripts/verify-responsive.mjs && node --check scripts/verify-product-guide.mjs",
     "verify:questions": "node scripts/verify-questions.mjs",
     "verify:responsive": "node scripts/verify-responsive.mjs",
-    "verify:guide": "node scripts/verify-product-guide.mjs"
-  },
-  "engines": {
-    "node": ">=22"
+    "verify:guide": "node scripts/verify-product-guide.mjs",
+    "verify:release": "node scripts/verify-plugin-release.mjs",
+    "check": "node --check src/server.js && node --check src/cli.js && node --check src/cc-switch-models.js && node --check src/workspaces/workspace-catalog.js && node --check src/conversations/conversation-catalog.js && node --check src/adapters/capabilities.js && node --check src/adapters/claude.js && node --check src/adapters/codex.js && node --check src/adapters/deepseek-harness.js && node --check src/adapters/dsh-desktop.js && node --check src/dsh-desktop-channels.js && node --check src/event-store.js && node --check src/notifier.js && node --check src/attachments.js && node --check src/session-manager.js && node --check integrations/dsh-phone/lib/index.js && node --check src/adapters/zcode-native.js && node --check public/adapter-capabilities.js && node --check public/workspace-navigation.js && node --check public/markdown.js && node --check public/highlight.js && node --check public/transcript.js && node --check public/app.js && node --check scripts/verify-workspace-ui.mjs && node --check scripts/verify-message-blocks.mjs && node --check scripts/verify-background-scrim.mjs && node --check scripts/verify-model-control.mjs && node --check scripts/verify-notifications.mjs && node --check scripts/verify-attachments.mjs && node --check scripts/verify-features.mjs && node --check scripts/verify-quick-nav.mjs && node --check scripts/verify-questions.mjs && node --check scripts/verify-responsive.mjs && node --check scripts/verify-product-guide.mjs && node --check scripts/verify-plugin-release.mjs"
   },
   "dependencies": {
     "katex": "0.19.1",

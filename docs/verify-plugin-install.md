@@ -61,7 +61,7 @@ npm run uninstall:dsh-phone   # 现在会同时清理新旧两个名字
 
 ## 第 3 层：端到端（用户真正会做的事）
 
-1. 起桥：仓库根 `npm start`（默认 8787）；
+1. 起桥：`npx @chenacc/agentbridge`（或仓库根 `npm start`），默认 8787；
 2. DSH Desktop 项目会话里 `/phone`；
 3. 手机与电脑同一可信 Wi-Fi，微信扫一扫；
 4. 在手机上依次验证：
@@ -83,9 +83,9 @@ npm run uninstall:dsh-phone   # 现在会同时清理新旧两个名字
 做法：另一台 Windows（或新建一个本地用户账户，效果接近），只装 **DSH Desktop + Node 22+**，然后：
 
 1. 从市场装（或 `pnpm add` 一次），重启，`/phone`；
-2. 桥必须先跑——干净机器上意味着用户还要自己装 AgentBridge（`git clone` + `npm install` + `npm start`）。**这一步是当前最大的体验断点**：插件装了但没有桥，`/phone` 只会报错。
+2. 桥用一条命令起：`npx @chenacc/agentbridge`；要长期用再 `npm install -g @chenacc/agentbridge`。
 
-想彻底消灭这个断点，就得让插件自带依赖并自动拉起桥（下一版的事）。
+**这仍是当前最大的体验断点**：插件装了但没起桥，`/phone` 只会把起桥步骤打印出来。彻底消掉它需要插件自己拉起桥（下一步 B）。
 
 ## 第 5 层：卸载是否干净
 

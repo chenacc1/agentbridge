@@ -2,6 +2,25 @@
 
 目标：让 `@chenacc/dsh-agentbridge` 出现在 DSH Desktop「设置 → 插件市场 → 发现」里，并且可以点一下安装。
 
+## 两个 npm 包，两条命令
+
+| 包 | npm 名 | 作用 | 用户命令 |
+|---|---|---|---|
+| 插件（遥控器） | `@chenacc/dsh-agentbridge` | 在 DSH 会话里接出 `/phone` | 市场点安装，或 `pnpm add` 到 profile |
+| 桥（基站） | `@chenacc/agentbridge` | 手机控制台的本地服务端 | `npx @chenacc/agentbridge` |
+
+桥用 scope 名不是偏好：`agentbridge` 这个裸名字和已存在的 `agent-bridge@0.6.2` 去掉连字符后完全相同，按 npm 的仿冒防护大概率会被 403 拦下（`dsh-agentbridge` 当初就是被 `dsh-agent-bridge` 卡住的）。直接选 `@chenacc/agentbridge`，省一次失败尝试。
+
+### 桥的发布
+
+```powershell
+cd D:\codex_project\手机远程操控agent
+npm login --auth-type=web --registry https://registry.npmjs.org   # 登录态过期后需要重做
+npm publish --registry https://registry.npmjs.org
+```
+
+桥的 `files` 只带 `bin`、`src`、`public`、`.env.example`、`docs/RELEASING.md`——测试、video、scripts 都不进包。发布前 `npm pack --dry-run` 确认 `public/index.html` 和 `src/server.js` 在里面；`bin/agentbridge.js` 用模块相对路径定位 `src/server.js`，所以装在 `node_modules` 里也能自启服务（已用真实 tarball 验过：`phone --agent echo` 会拉起桥并返回配对信息）。
+
 ## 先理解机制：市场不存包
 
 市场是个**目录 + npm 安装器**，没有"上传安装包"这一步。链路是：

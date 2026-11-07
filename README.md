@@ -166,14 +166,19 @@ node .\bin\agentbridge.js phone --agent codex --session <thread-id>
 
 前提：DSH Desktop 已安装，且存在桌面 profile `%USERPROFILE%\.dsh\profiles\desktop\package.json`（或由 `DSH_HOME` 指定）。
 
-**第 0 步：先把桥跑起来。** 插件是遥控器，桥是基站；没有桥，`/phone` 只会告诉你"无法连接 AgentBridge"。桥就在本仓库：
+**第 0 步：先把桥跑起来。** 插件是遥控器，桥是基站；没有桥，`/phone` 只会告诉你"无法连接 AgentBridge"。最省事是一条命令（自动起桥并直接打印二维码）：
 
 ```powershell
-git clone https://github.com/chenacc1/agentbridge.git
-cd agentbridge
-npm install
-npm start          # 或双击「启动 AgentBridge.cmd」
+npx @chenacc/agentbridge
 ```
+
+想长期使用、或要改配置（项目白名单、远程通道、通知推送），装成全局命令：
+
+```powershell
+npm install -g @chenacc/agentbridge    # 之后随时 agentbridge phone --agent claude
+```
+
+也可以从仓库跑：`git clone https://github.com/chenacc1/agentbridge.git` → `cd agentbridge` → `npm install` → `npm start`（或双击「启动 AgentBridge.cmd」）。
 
 **第 1 步：装插件（普通用户走市场）**：设置 → 插件市场 → 发现，搜 `AgentBridge` 或 `@chenacc/dsh-agentbridge` → 安装 → 重启 DSH Desktop。等价的命令行安装：
 
