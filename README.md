@@ -43,33 +43,42 @@
 
 AgentBridge 不替你安装或登录任何 Agent，只检测本机**已安装且已登录**的那些；没装的显示「未安装」，不会假装可用。
 
-### 四步装好
+### 两种装法
+
+**想马上用（推荐）**：不用下载仓库，一条命令起桥并直接打印二维码。
 
 ```powershell
-# 1. 取代码（尚未发布到 npm，目前从仓库获取）
+npx @chenacc/agentbridge
+```
+
+要长期使用、或改配置（项目白名单、远程通道、通知推送），装成全局命令：
+
+```powershell
+npm install -g @chenacc/agentbridge
+agentbridge phone --agent claude
+```
+
+**要改代码或跑测试**：从仓库来。
+
+```powershell
 git clone https://github.com/chenacc1/agentbridge.git
 cd agentbridge
-
-# 2. 装依赖（运行时只有 katex 和 qrcode 两个）
 npm install
-
-# 3. 声明手机可以访问的项目目录：别名=绝对路径，分号分隔
-$env:AGENTBRIDGE_PROJECTS = "agentbridge=D:\projects\agentbridge"
-
-# 4. 启动
+$env:AGENTBRIDGE_PROJECTS = "agentbridge=D:\projects\agentbridge"   # 可选：别名=绝对路径，分号分隔
 npm start
 ```
 
 打开 [http://127.0.0.1:8787](http://127.0.0.1:8787)，桌面页会显示一次性二维码；手机连同一可信 Wi-Fi，用微信「扫一扫」扫描即可。
 
 > 二维码只用于首次配对，会过期且**只能使用一次**。配对成功后请收藏手机页显示的固定回访地址，之后从收藏进入；不要收藏 `/pair?code=...` 临时链接。
-> 第 3 步可以不写：不设 `AGENTBRIDGE_PROJECTS` 时默认把**启动目录**作为唯一可用项目，别名 `workspace`。别名只允许字母、数字、`_`、`-`（≤40 字符）。
+> `AGENTBRIDGE_PROJECTS` 可以不写：不设时默认把**启动目录**作为唯一可用项目，别名 `workspace`。别名只允许字母、数字、`_`、`-`（≤40 字符）。
 > 这些变量必须设在**真正启动 Bridge 的那个终端**里；`.env.example` 只是一份清单，程序不会自动读取 `.env` 文件。
 
 ### 装完自检
 
 ```powershell
-node .\bin\agentbridge.js phone --agent echo
+npx @chenacc/agentbridge phone --agent echo
+# 从仓库跑的话：node .\bin\agentbridge.js phone --agent echo
 ```
 
 Echo 适配器不接触任何 AI 工具，只验证「CLI → 本机 Bridge → 生成配对二维码」整条链路。能打印二维码就说明安装正确，扫码后可看到手机与桌面同步。

@@ -46,3 +46,7 @@ docs/assets/agentbridge-workspaces-mobile.png
 scripts/verify-product-guide.mjs
 
 .tmp-gh-ca.pem
+
+# local scratch probes / 
+._*.mjs
+_poll.mjs
