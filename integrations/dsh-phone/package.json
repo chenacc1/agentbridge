@@ -1,6 +1,6 @@
 {
   "name": "@chenacc/dsh-agentbridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "AgentBridge for DSH Desktop: run /phone in a conversation to pair a phone console with that exact live Agent.",
   "license": "MIT",
   "type": "module",

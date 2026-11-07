@@ -739,9 +739,8 @@ test("/phone tells the user how to start the bridge when nothing is listening", 
   // service, then hand over commands the user can paste as-is.
   assert.match(result.text, /插件本身已经加载/);
   assert.match(result.text, /http:\/\/127\.0\.0\.1:8787/);
-  assert.match(result.text, /git clone https:\/\/github\.com\/chenacc1\/agentbridge\.git/);
-  assert.match(result.text, /npm install/);
-  assert.match(result.text, /npm start/);
+  assert.match(result.text, /npx @chenacc\/agentbridge/);
+  assert.match(result.text, /npm install -g @chenacc\/agentbridge/);
   assert.match(result.text, /AGENTBRIDGE_ORIGIN/);
 });
 
@@ -765,6 +764,6 @@ test("/phone keeps the raw error when the bridge is up but rejects the request",
   assert.equal(result.kind, "error");
   // A live bridge that refuses is not a setup problem, so the setup guide must
   // not be shown — the message has to carry what the bridge actually said.
-  assert.doesNotMatch(result.text, /git clone/);
+  assert.doesNotMatch(result.text, /npx @chenacc\/agentbridge/);
   assert.match(result.text, /Invalid DSH Desktop pairing|无法连接 AgentBridge/);
 });

@@ -63,15 +63,14 @@ function bridgeSetupText(origin) {
   return [
     `无法连接 AgentBridge 桥（${origin}）。插件本身已经加载，缺的是电脑上这个本地服务。`,
     "",
-    "在电脑上开一个终端，第一次使用时依次执行：",
-    "1) git clone https://github.com/chenacc1/agentbridge.git",
-    "2) cd agentbridge && npm install",
-    "3) npm start",
+    "手动起桥只要一条命令：",
+    "npx @chenacc/agentbridge",
     "",
-    "已经下载过这个仓库的话，进到那个目录执行 npm start 就行。",
-    `桥启动后终端里会打印 ${origin}，那时再敲一次 /phone。`,
+    "想长期使用就装成全局命令：",
+    "npm install -g @chenacc/agentbridge",
+    "agentbridge phone --agent claude",
     "",
-    "桥不在默认端口的话，先设置环境变量 AGENTBRIDGE_ORIGIN 指向实际地址，再重启 DSH Desktop。",
+    `桥启动后再敲一次 /phone。桥不在默认端口的话，先设置环境变量 AGENTBRIDGE_ORIGIN，再重启 DSH Desktop。`,
   ].join("\n");
 }
 
