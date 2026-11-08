@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +91,11 @@ const AUTOSTART_TIMEOUT_MS = 8_000;
  * comes from module resolution next to this file. `AGENTBRIDGE_BRIDGE_ENTRY`
  * exists for tests and for unusual installs.
  *
+ * Resolution goes through `createRequire` first on purpose: `import.meta.resolve`
+ * only exists from Node 20.6, and the Electron runtime DSH Desktop loads plugins
+ * in can be older than that — an unresolvable answer there fails silently and
+ * looks exactly like "no bridge installed".
+ *
  * The resolved manifest must live under a `node_modules` directory: without that
  * check, Node's package self-reference resolves this repository's own root
  * package as `@chenacc/agentbridge`, so a development checkout would start a
@@ -97,13 +103,27 @@ const AUTOSTART_TIMEOUT_MS = 8_000;
  */
 function bridgeServerEntry() {
   if (process.env.AGENTBRIDGE_BRIDGE_ENTRY) return process.env.AGENTBRIDGE_BRIDGE_ENTRY;
+
+  const candidates = [];
   try {
-    const resolved = fileURLToPath(import.meta.resolve(`${BRIDGE_PACKAGE}/package.json`));
-    if (!resolved.split(path.sep).includes("node_modules")) return null;
-    return path.join(path.dirname(resolved), "src", "server.js");
+    candidates.push(createRequire(import.meta.url).resolve(`${BRIDGE_PACKAGE}/package.json`));
   } catch {
-    return null;
+    // Not installed next to the plugin: fall through to the ESM resolver.
   }
+  try {
+    if (typeof import.meta.resolve === "function") {
+      candidates.push(fileURLToPath(import.meta.resolve(`${BRIDGE_PACKAGE}/package.json`)));
+    }
+  } catch {
+    // No ESM resolver either: the dependency is simply absent.
+  }
+
+  for (const manifest of candidates) {
+    if (!manifest.split(path.sep).includes("node_modules")) continue;
+    const entry = path.join(path.dirname(manifest), "src", "server.js");
+    if (existsSync(entry)) return entry;
+  }
+  return null;
 }
 
 async function bridgeIsReady(origin) {
@@ -135,19 +155,28 @@ function autoStartAllowed() {
  * Start the local bridge and wait until it answers.
  *
  * Returns true only once the health check passes, so the caller retries the real
- * registration instead of trusting that a spawn means a working server. Every
- * failure path is silent: the caller falls back to the manual setup text.
+ * registration instead of trusting that a spawn means a working server. Failures
+ * stay quiet for the user (they get the manual steps either way) but each one is
+ * reported through `log`, because "nothing happened" is the hardest thing to
+ * diagnose from the outside.
  */
-async function startBridge(origin) {
+async function startBridge(origin, log = () => {}) {
   if (await bridgeIsReady(origin)) return true;
-  if (!autoStartAllowed()) return false;
+  if (!autoStartAllowed()) {
+    log("auto-start disabled for this process");
+    return false;
+  }
   const entry = bridgeServerEntry();
-  if (!entry || !existsSync(entry)) return false;
+  if (!entry || !existsSync(entry)) {
+    log(`auto-start skipped: ${BRIDGE_PACKAGE} is not resolvable from the plugin install`);
+    return false;
+  }
 
   let port;
   try {
     port = new URL(origin).port || "8787";
   } catch {
+    log(`auto-start skipped: ${origin} is not a usable origin`);
     return false;
   }
 
@@ -172,7 +201,8 @@ async function startBridge(origin) {
       },
     });
     child.unref();
-  } catch {
+  } catch (error) {
+    log(`auto-start failed to spawn ${entry}: ${textFromError(error)}`);
     return false;
   }
 
@@ -181,6 +211,7 @@ async function startBridge(origin) {
     await new Promise((resolve) => setTimeout(resolve, 150));
     if (await bridgeIsReady(origin)) return true;
   }
+  log(`auto-start timed out: spawned ${entry} but ${origin} never answered`);
   return false;
 }
 
@@ -969,9 +1000,13 @@ function apply(ctx) {
 
   // Bring the bridge up in the background as soon as the plugin loads, so by the
   // time the user types /phone the local service is already there. Deliberately
-  // not awaited: a slow spawn must never delay desktop startup, and every failure
-  // is silent — /phone still prints the manual steps when nothing came up.
-  void startBridge(String(process.env.AGENTBRIDGE_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, "")).catch(() => {});
+  // not awaited: a slow spawn must never delay desktop startup, and the user
+  // still gets the manual steps from /phone when nothing came up. The reason is
+  // logged instead of swallowed, because "nothing happened" is undiagnosable.
+  void startBridge(
+    String(process.env.AGENTBRIDGE_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, ""),
+    (message) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] ${message}`),
+  ).catch((error) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] auto-start crashed: ${textFromError(error)}`));
 }
 
 export { apply, inject, name };
