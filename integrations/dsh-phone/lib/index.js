@@ -6,8 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * The tunnel machinery lives in the bridge package, because the CLI needs exactly
- * the same thing — `agentbridge phone` has to publish a public address too.
+ * The tunnel and path-selection machinery lives in the bridge package, because
+ * the CLI needs exactly the same thing — `agentbridge phone` has to publish an
+ * address too, on whichever network path suits this machine.
  *
  * Loaded lazily rather than at module scope: inside this repository the plugin
  * sits in the bridge package's own tree with no `node_modules` entry to resolve,
@@ -15,15 +16,27 @@ import { fileURLToPath } from "node:url";
  * (which is what the release check does). The published package always carries
  * the dependency, so the relative fallback only runs for development and tests.
  */
-let tunnelModule = null;
+const lazyModules = new Map();
+function loadModule(specifier, fallback) {
+  const cached = lazyModules.get(specifier);
+  if (cached) return cached;
+  const loading = (async () => {
+    try {
+      return await import(specifier);
+    } catch {
+      return await import(fallback);
+    }
+  })();
+  lazyModules.set(specifier, loading);
+  return loading;
+}
+
 async function tunnel() {
-  if (tunnelModule) return tunnelModule;
-  try {
-    tunnelModule = await import("@chenacc/agentbridge/tunnel");
-  } catch {
-    tunnelModule = await import("../../../src/tunnel.js");
-  }
-  return tunnelModule;
+  return loadModule("@chenacc/agentbridge/tunnel", "../../../src/tunnel.js");
+}
+
+async function remote() {
+  return loadModule("@chenacc/agentbridge/remote", "../../../src/remote.js");
 }
 
 const name = "agentbridge-dsh-phone";
@@ -300,74 +313,27 @@ function bridgeDataDir() {
 }
 
 /**
- * The cloudflared to run, fetching the official build the first time.
- *
- * Remote mode is supposed to be the default, and "the default" cannot depend on
- * the user having heard of cloudflared. So the machine is searched first (a real
- * install wins, whoever put it there), and only when nothing is found does the
- * plugin download Cloudflare's own binary into its data directory — no elevation,
- * nothing in Program Files, removable by deleting one folder.
- */
-async function resolveCloudflared(log) {
-  const { findCloudflared, ensureCloudflared } = await tunnel();
-  const installed = findCloudflared({ env: process.env, home: homedir() });
-  if (installed) return installed;
-
-  log("cloudflared was not found; fetching the official build into the bridge's data directory (once)");
-  const downloaded = await ensureCloudflared({ dataDir: bridgeDataDir(), env: process.env, log });
-  if (!downloaded) {
-    log(
-      "still no cloudflared, so this machine stays on same-Wi-Fi pairing: "
-      + "install it with `winget install --id Cloudflare.cloudflared`, or download cloudflared-windows-amd64.exe "
-      + "from https://github.com/cloudflare/cloudflared/releases and point AGENTBRIDGE_CLOUDFLARED at it",
-    );
-  }
-  return downloaded;
-}
-
-/**
  * The address the QR code should carry, and the key that unlocks it.
  *
- * Returns null when the machine should stay on the LAN: no cloudflared, an
- * explicit opt-out, or a tunnel that would not come up. That is not an error —
- * same-Wi-Fi pairing still works — so the reason is logged and nothing throws.
+ * The decision itself lives in the bridge package (`@chenacc/agentbridge/remote`)
+ * so the CLI's `/phone` and this plugin cannot drift apart: one order of
+ * providers, one place that knows about Funnel, Tailscale and ZeroTier.
+ * Returns null when the machine should stay on the LAN — an explicit opt-out or
+ * nothing that could be brought up — and that is logged, never thrown.
  */
 async function resolveRemoteOrigin(log) {
-  const explicit = String(process.env.AGENTBRIDGE_PUBLIC_ORIGIN ?? "").trim().replace(/\/$/, "");
-  if (explicit) return { origin: explicit, accessKey: null, how: "AGENTBRIDGE_PUBLIC_ORIGIN" };
-
-  const { ensureAccessKey, startQuickTunnel } = await tunnel();
-  const supplied = String(process.env.AGENTBRIDGE_TUNNEL_URL ?? "").trim().replace(/\/$/, "");
-  if (supplied) return { origin: supplied, accessKey: ensureAccessKey(bridgeDataDir()), how: "AGENTBRIDGE_TUNNEL_URL" };
-
-  const command = await resolveCloudflared(log);
-  if (!command) {
-    log("no cloudflared is available, staying on this Wi-Fi only");
-    return null;
-  }
-
+  const { resolveRemote } = await remote();
   const origin = localOrigin();
   let port;
   try {
     port = new URL(origin).port || "8787";
   } catch {
-    log(`cloudflare tunnel skipped: ${origin} is not a usable local origin`);
+    log(`remote mode skipped: ${origin} is not a usable local origin`);
     return null;
   }
-
-  try {
-    const started = await startQuickTunnel({
-      command,
-      origin: `http://127.0.0.1:${port}`,
-      dataDir: bridgeDataDir(),
-      log,
-      timeoutMs: TUNNEL_TIMEOUT_MS,
-    });
-    return { origin: started.url, accessKey: ensureAccessKey(bridgeDataDir()), how: started.reused ? "cloudflare (existing tunnel)" : "cloudflare" };
-  } catch (error) {
-    log(`cloudflare tunnel failed, staying on this Wi-Fi only: ${textFromError(error)}`);
-    return null;
-  }
+  const decided = await resolveRemote({ env: process.env, dataDir: bridgeDataDir(), port, log });
+  if (!decided) return null;
+  return { ...decided, how: decided.detail ?? decided.provider };
 }
 
 /**
@@ -415,6 +381,8 @@ async function stopBridge(origin, log) {
 function remoteEnv(remote) {
   return {
     AGENTBRIDGE_PUBLIC_ORIGIN: remote.origin,
+    // Lets /api/health and the bridge log name the path that won.
+    AGENTBRIDGE_REMOTE_PROVIDER: remote.provider ?? "remote",
     ...(remote.accessKey ? { AGENTBRIDGE_ACCESS_KEY: remote.accessKey } : {}),
   };
 }

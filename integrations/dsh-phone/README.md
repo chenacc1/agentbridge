@@ -80,12 +80,17 @@ pnpm add @chenacc/dsh-agentbridge@latest
 | `AGENTBRIDGE_ORIGIN` | `http://127.0.0.1:8787` | 插件连接的 AgentBridge 地址；桥换了端口时设置它 |
 | `AGENTBRIDGE_DATA_DIR` | `~/.agentbridge`（自动启动时） | 桥的会话、配对、密钥与日志目录，不会写进 `~/.dsh` |
 | `AGENTBRIDGE_NO_AUTOSTART` | 未设置 | 设为 `1` 关掉"插件加载时自动起桥"，只保留 `/phone` 里的手动提示 |
-| `AGENTBRIDGE_NO_TUNNEL` | 未设置 | 设为 `1` 只用局域网，不起 Cloudflare 隧道（比如你只在家里用） |
-| `AGENTBRIDGE_PUBLIC_ORIGIN` | 未设置 | 自己指定对外的地址（命名隧道、Tailscale、ZeroTier）；设了它插件就不起隧道 |
+| `AGENTBRIDGE_REMOTE` | `auto` | 走哪条路径：`auto` / `cloudflare` / `named` / `funnel` / `tailscale` / `zerotier` / `lan` |
+| `AGENTBRIDGE_NO_TUNNEL` | 未设置 | 设为 `1` 只用局域网（等价于 `AGENTBRIDGE_REMOTE=lan`） |
+| `AGENTBRIDGE_PUBLIC_ORIGIN` | 未设置 | 自己指定对外的地址；设了它插件不再挑路径 |
 | `AGENTBRIDGE_TUNNEL_URL` | 未设置 | 直接指定一个隧道域名；主要给测试和"隧道自己管"的人用 |
+| `AGENTBRIDGE_CLOUDFLARE_TUNNEL` / `AGENTBRIDGE_CLOUDFLARE_HOSTNAME` | 未设置 | 用已经建好的 Cloudflare 命名隧道 + 自己的域名 |
 | `AGENTBRIDGE_CLOUDFLARED` | 自动查找 | 用你自己那份 `cloudflared`；设了它插件既不搜索也不下载 |
 | `AGENTBRIDGE_NO_DOWNLOAD` | 未设置 | 设为 `1` 禁止插件自动下载 `cloudflared`（会退回局域网） |
 | `AGENTBRIDGE_CLOUDFLARED_URL` | 官方 GitHub Releases | 换一个下载源（内网镜像之类）；下载后照样要过 `--version` 校验 |
+| `AGENTBRIDGE_TAILSCALE` / `AGENTBRIDGE_ZEROTIER` | 自动检测 | 手动指定 Tailscale 可执行文件 / ZeroTier 的 IPv4 |
+
+路径选择由桥包的 `@chenacc/agentbridge/remote` 负责，CLI 与插件共用同一份实现：同一个顺序、同一把访问密钥。当前实际走的是哪条，看 `/api/health` 的 `remoteProvider` 字段。
 
 变量要设在**真正启动 DSH Desktop 的环境里**（插件读 `process.env`），不是设在跑 bridge 的终端里。
 

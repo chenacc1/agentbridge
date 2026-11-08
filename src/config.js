@@ -174,6 +174,10 @@ export function loadConfig(env = process.env, workspace = process.cwd()) {
     // itself, so the plugin may ask for a restart to change the advertised address
     // without handing that power to anything else that can reach loopback.
     autostartToken: (env.AGENTBRIDGE_AUTOSTART_TOKEN ?? "").trim() || null,
+    // Which network path produced advertisedOrigin. Informational only: the
+    // launcher sets it so /api/health and the startup log can name the path
+    // instead of leaving the user to guess why the address changed.
+    remoteProvider: (env.AGENTBRIDGE_REMOTE_PROVIDER ?? "").trim() || null,
     // Outbound notifications: unset webhook means the feature is simply off.
     notifyWebhook: pick(env, "AGENTBRIDGE_NOTIFY_WEBHOOK", notifyFile.webhook),
     notifyFormat: pick(env, "AGENTBRIDGE_NOTIFY_FORMAT", notifyFile.format ?? "json").toLowerCase(),

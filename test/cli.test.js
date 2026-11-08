@@ -76,7 +76,10 @@ test("only addresses the phone cannot route to count as private", () => {
 
 test("an explicit public origin wins and needs no tunnel", async () => {
   const decided = await resolvePublicOrigin({ env: { AGENTBRIDGE_PUBLIC_ORIGIN: "https://bridge.example.com/" } });
-  assert.deepEqual(decided, { origin: "https://bridge.example.com", accessKey: null, how: "AGENTBRIDGE_PUBLIC_ORIGIN" });
+  assert.equal(decided.provider, "explicit");
+  assert.equal(decided.origin, "https://bridge.example.com");
+  assert.equal(decided.accessKey, null);
+  assert.equal(decided.isPublic, true);
 });
 
 test("a bridge that already publishes a public address is left alone", async () => {

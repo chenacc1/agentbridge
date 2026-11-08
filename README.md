@@ -112,25 +112,47 @@ Echo 适配器不接触任何 AI 工具，只验证「CLI → 本机 Bridge → 
 
 ### 二维码里的地址是怎么定的
 
-CLI 和插件都按下面的顺序决定二维码写什么：
+CLI 和插件共用同一套逻辑（`src/remote.js`），按下面的顺序决定二维码写什么：
 
 | 优先级 | 条件 | 二维码地址 |
 |---|---|---|
-| 1 | 设了 `AGENTBRIDGE_PUBLIC_ORIGIN` | 你给的那个（命名隧道、Tailscale、ZeroTier 都走这条） |
-| 2 | 已有桥正在用公网地址运行 | 复用它，不再起新隧道 |
-| 3 | 设了 `AGENTBRIDGE_NO_TUNNEL=1` | 局域网 |
-| 4 | 本机有或能下载 `cloudflared` | 新开 quick tunnel，地址形如 `https://随机名.trycloudflare.com` |
-| 5 | 以上都不成立 | 局域网，日志里说明原因 |
+| 1 | 设了 `AGENTBRIDGE_PUBLIC_ORIGIN` | 你给的那个（Tailscale、ZeroTier、自己的域名都走这条） |
+| 2 | 已有桥正在用公网地址运行 | 复用它，不再开新通道 |
+| 3 | 设了 `AGENTBRIDGE_NO_TUNNEL=1` 或 `AGENTBRIDGE_REMOTE=lan` | 局域网 |
+| 4 | `AGENTBRIDGE_REMOTE` 指定了某一条（`funnel` / `named` / `tailscale` / `zerotier` / `cloudflare`） | 只试那一条 |
+| 5 | 默认 `auto` | 按下面「五种远程路径」的顺序试，成功即停 |
+| 6 | 全都不成立 | 局域网，日志里逐条说明每条为什么失败 |
 
-### 四种远程路径
+### 五种远程路径
 
-| 场景 | 模式 | 手机要求 | 代价 |
+`auto`（默认）的尝试顺序：**命名隧道 → Funnel → Cloudflare quick → Tailscale → ZeroTier → 局域网**。下表的“自动”指装好就能用、不需要你手动跑脚本。
+
+| 路径 | 自动？ | 手机要求 | 代价 |
 |---|---|---|---|
-| 什么都不装、也不连同一个 Wi-Fi（**默认**） | Cloudflare quick tunnel | 只需浏览器 | 域名每次重建会变 |
-| 同一可信 Wi-Fi | 局域网 | 浏览器 / 微信 | 出门就不可用 |
-| 跨网络但属同一私有网络 | Tailscale | 同一 tailnet（装 App） | 手机要常驻 VPN 类 App |
-| Tailscale 不稳定 | ZeroTier | 同一私有网络（装 App） | 同上 |
-| 想固定域名又不想买服务器 | Cloudflare 命名隧道 / Tailscale Funnel | 只需浏览器 | 要域名或账号配置 |
+| Cloudflare quick tunnel | ✅ 缺 `cloudflared` 会自己下 | 只需浏览器 | 域名每次重建会变 |
+| 局域网 | ✅ 兜底 | 浏览器 / 微信 | 出门就不可用 |
+| Tailscale（私有地址） | ✅ 已登录且在线才用 | 同一 tailnet（装 App） | 手机要常驻 VPN 类 App |
+| ZeroTier（私有地址） | ✅ 检测到 ZeroTier 网卡才用 | 同一私有网络（装 App） | 同上 |
+| Tailscale Funnel | 🟡 需 `AGENTBRIDGE_REMOTE=funnel` 显式开启；`auto` 只复用已开启的 | 只需浏览器 | 要在 Tailscale 管理台开启 Funnel |
+| Cloudflare 命名隧道 | 🟡 需配隧道名 + 域名 | 只需浏览器 | 域名要托管在 Cloudflare |
+
+Funnel 单独放在“要显式开启”这一档，是因为开启它会改动你 tailnet 的对外暴露配置——这种事不该由一次扫码替你决定。反过来，**已经开着的** Funnel 会被 `auto` 直接复用。
+
+只想用某一条路径：
+
+```powershell
+$env:AGENTBRIDGE_REMOTE = "funnel"    # 或 named | cloudflare | tailscale | zerotier | lan
+agentbridge phone --agent claude
+```
+
+命名隧道需要两个变量：
+
+```powershell
+$env:AGENTBRIDGE_CLOUDFLARE_TUNNEL = "agentbridge"        # cloudflared 里已经建好的隧道名
+$env:AGENTBRIDGE_CLOUDFLARE_HOSTNAME = "bridge.example.com"
+```
+
+当前路径会同时出现在三个地方：CLI 输出的「网络:」一行、桥启动日志的 `Remote path:` 一行、`/api/health` 的 `remoteProvider` 字段——二维码打不开时先看这三处。
 
 ![分镜关键帧：四条网络路径分别接入同一台 Windows Host，其中 Cloudflare 路径还要经过一道访问密钥门禁](./docs/assets/keyframe-09-network-paths.jpg)
 
@@ -344,11 +366,16 @@ agentbridge phone --agent deepseek-harness
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
-| `AGENTBRIDGE_NO_TUNNEL` | 未设置 | 设为 `1` 只用局域网，不起 Cloudflare 隧道 |
+| `AGENTBRIDGE_REMOTE` | `auto` | 走哪条路径：`auto` / `cloudflare` / `named` / `funnel` / `tailscale` / `zerotier` / `lan` |
+| `AGENTBRIDGE_NO_TUNNEL` | 未设置 | 设为 `1` 等价于 `AGENTBRIDGE_REMOTE=lan` |
 | `AGENTBRIDGE_TUNNEL_URL` | 未设置 | 直接指定隧道域名（给"隧道自己管"的人） |
+| `AGENTBRIDGE_CLOUDFLARE_TUNNEL` | 未设置 | Cloudflare **命名隧道**的名字；设了它 `auto` 会优先用它 |
+| `AGENTBRIDGE_CLOUDFLARE_HOSTNAME` | 未设置 | 命名隧道对应的公网域名 |
 | `AGENTBRIDGE_CLOUDFLARED` | 自动查找 | 用你自己那份 `cloudflared`；设了它既不搜索也不下载 |
 | `AGENTBRIDGE_CLOUDFLARED_URL` | 官方 Releases | 换下载源（内网镜像），下载后照样过 `--version` 校验 |
 | `AGENTBRIDGE_NO_DOWNLOAD` | 未设置 | 设为 `1` 禁止自动下载 `cloudflared` |
+| `AGENTBRIDGE_TAILSCALE` | 自动查找 | 指定 `tailscale` 可执行文件（装在非常规位置时用） |
+| `AGENTBRIDGE_ZEROTIER` | 自动检测网卡 | 直接指定 ZeroTier 分配到的 IPv4 |
 
 **插件 / CLI 专用：**
 
@@ -376,8 +403,8 @@ agentbridge phone --agent deepseek-harness
 ## 验证
 
 ```powershell
-npm run check           # 语法检查（37 个文件）
-npm test                # 单元与集成测试（当前 230 项全部通过）
+npm run check           # 语法检查（38 个文件）
+npm test                # 单元与集成测试（当前 240 项全部通过）
 npm run verify:release  # 插件发布验收（17 项：registry / tarball / 可导入性）
 npm run verify:remote   # 端到端验证 Cloudflare 远程链路，需要 cloudflared 与网络
 npm run verify:mobile   # 可选：真实浏览器端到端，需要 Chrome 或 Edge
@@ -391,13 +418,15 @@ npm run verify:mobile   # 可选：真实浏览器端到端，需要 Chrome 或 
 
 | 包 | 当前版本 | tag 前缀 | 装到哪 |
 |---|---|---|---|
-| `@chenacc/agentbridge` | `0.1.4` | `bridge-v*` | 全局命令 / `npx` / 插件依赖 |
-| `@chenacc/dsh-agentbridge` | `0.3.3` | `dsh-v*` | DSH Desktop 的 profile |
+| `@chenacc/agentbridge` | `0.2.0` | `bridge-v*` | 全局命令 / `npx` / 插件依赖 |
+| `@chenacc/dsh-agentbridge` | `0.4.0` | `dsh-v*` | DSH Desktop 的 profile |
 
 最近的阶段性变化：
 
+- **0.2.0（桥）**：路径选择抽成 provider（`src/remote.js`）——Cloudflare quick / 命名隧道 / Tailscale / Tailscale Funnel / ZeroTier 共用一套顺序与回退，`AGENTBRIDGE_REMOTE` 可指定单条；`/api/health` 与启动日志会报出当前走的是哪条。
 - **0.1.1–0.1.4（桥）**：二维码地址改按"能不能被手机路由到"排序（跳过 `169.254` 与虚拟网卡）；`/api/health` 汇报自己广播的地址；新增只有本机 token 能调的自动重启入口；隧道能力下沉到本包，CLI 的 `/phone` 因此也默认公网。
-- **0.3.0–0.3.3（插件）**：加载时自动起桥、自动开 Cloudflare 隧道、`cloudflared` 缺失时自动下载，并复用桥包里的同一套实现。
+- **0.4.0（插件）**：改用桥包里的同一套路径选择，本地行为不变但多了 Funnel / Tailscale / ZeroTier 三条可选路径。
+- **0.3.0–0.3.3（插件）**：加载时自动起桥、自动开 Cloudflare 隧道、`cloudflared` 缺失时自动下载。
 
 升级方式：
 

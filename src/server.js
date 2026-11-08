@@ -419,6 +419,7 @@ export async function createBridge(options = {}) {
           advertisedOrigin: config.advertisedOrigin,
           accessKeyRequired: Boolean(config.accessKey),
           autostart: config.autostart === true,
+          remoteProvider: config.remoteProvider,
         });
       }
 
@@ -989,6 +990,9 @@ export async function startBridge() {
     bridge.server.listen(bridge.config.port, bridge.config.host, resolve);
   });
   console.log(`AgentBridge running at http://127.0.0.1:${bridge.config.port}`);
+  if (bridge.config.remoteProvider) {
+    console.log(`Remote path: ${bridge.config.remoteProvider} → ${bridge.config.advertisedOrigin}`);
+  }
   console.log(`WeChat scan target: ${bridge.getCurrentPairing().url}`);
   // Silence here used to mean a QR encoding an address the phone could never reach.
   if (new URL(bridge.config.advertisedOrigin).hostname === "127.0.0.1") {
