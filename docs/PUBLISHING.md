@@ -2,6 +2,8 @@
 
 目标：让 `@chenacc/dsh-agentbridge` 出现在 DSH Desktop「设置 → 插件市场 → 发现」里，并且可以点一下安装。
 
+> **当前线上状态（2026-11）**：桥 `@chenacc/agentbridge` **0.1.4**、插件 `@chenacc/dsh-agentbridge` **0.3.3**，都已由 CI 发布并带 SLSA provenance；市场条目已收录（PR 已合并），目录快照每天刷新一次，卡片上的版本号可能比 npm 的 `latest` 晚一天——安装动作本身拉的是 npm `latest`。
+
 ## 发版：打 tag，让 CI 发（配好后不用再点浏览器）
 
 `.github/workflows/publish.yml` 已经就位：推 `dsh-v*` tag 发插件、推 `bridge-v*` tag 发桥，走 npm 的 Trusted Publishing（OIDC），不需要 `NPM_TOKEN`，也不用人在浏览器里确认。
