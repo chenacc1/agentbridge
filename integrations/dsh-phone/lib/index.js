@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureAccessKey, findCloudflared, startQuickTunnel } from "./tunnel.js";
 
 const name = "agentbridge-dsh-phone";
 // `agents` is not optional: creating a conversation from the phone asks the agent
@@ -126,15 +127,24 @@ function bridgeServerEntry() {
   return null;
 }
 
-async function bridgeIsReady(origin) {
+async function bridgeHealth(origin) {
   try {
-    const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(700) });
-    if (!response.ok) return false;
+    const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1200) });
+    if (!response.ok) return null;
     const body = await response.json().catch(() => null);
-    return body?.ok === true;
+    return body?.ok === true ? body : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function bridgeIsReady(origin) {
+  return (await bridgeHealth(origin)) !== null;
+}
+
+/** Where the plugin itself talks to the bridge. Always loopback. */
+function localOrigin() {
+  return String(process.env.AGENTBRIDGE_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, "");
 }
 
 /**
@@ -160,7 +170,7 @@ function autoStartAllowed() {
  * reported through `log`, because "nothing happened" is the hardest thing to
  * diagnose from the outside.
  */
-async function startBridge(origin, log = () => {}) {
+async function startBridge(origin, log = () => {}, extraEnv = {}) {
   if (await bridgeIsReady(origin)) return true;
   if (!autoStartAllowed()) {
     log("auto-start disabled for this process");
@@ -185,6 +195,10 @@ async function startBridge(origin, log = () => {}) {
     ...process.env,
     AGENTBRIDGE_PORT: process.env.AGENTBRIDGE_PORT || port,
     AGENTBRIDGE_DATA_DIR: dataDir,
+    // Marks this child as the plugin's own, so a later launch may stop it to pick
+    // up a new address. A bridge the user started by hand never gets this flag.
+    AGENTBRIDGE_AUTOSTART: "1",
+    ...extraEnv,
   };
   // Under Electron `process.execPath` is DSH Desktop itself, not node: launching
   // it with a .js path starts the app again and no server ever binds. Electron
@@ -239,6 +253,153 @@ async function startBridge(origin, log = () => {}) {
   }
   log(`auto-start timed out: spawned ${entry} but ${origin} never answered`);
   return false;
+}
+
+const TUNNEL_TIMEOUT_MS = 40_000;
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/**
+ * Whether this process may put the bridge on the public internet.
+ *
+ * Same reasoning as `autoStartAllowed`: a test run must not create a public
+ * tunnel to the developer's machine. Both escape hatches that name an explicit
+ * address are honoured, because those are values, not side effects.
+ */
+function remoteAllowed() {
+  if (process.env.AGENTBRIDGE_NO_TUNNEL === "1") return false;
+  if (!autoStartAllowed()) return false;
+  if (process.env.AGENTBRIDGE_PUBLIC_ORIGIN || process.env.AGENTBRIDGE_TUNNEL_URL) return true;
+  return process.env.NODE_TEST_CONTEXT === undefined;
+}
+
+function bridgeDataDir() {
+  return process.env.AGENTBRIDGE_DATA_DIR || path.join(homedir(), ".agentbridge");
+}
+
+/**
+ * The address the QR code should carry, and the key that unlocks it.
+ *
+ * Returns null when the machine should stay on the LAN: no cloudflared, an
+ * explicit opt-out, or a tunnel that would not come up. That is not an error —
+ * same-Wi-Fi pairing still works — so the reason is logged and nothing throws.
+ */
+async function resolveRemoteOrigin(log) {
+  const explicit = String(process.env.AGENTBRIDGE_PUBLIC_ORIGIN ?? "").trim().replace(/\/$/, "");
+  if (explicit) return { origin: explicit, accessKey: null, how: "AGENTBRIDGE_PUBLIC_ORIGIN" };
+
+  const supplied = String(process.env.AGENTBRIDGE_TUNNEL_URL ?? "").trim().replace(/\/$/, "");
+  if (supplied) return { origin: supplied, accessKey: ensureAccessKey(bridgeDataDir()), how: "AGENTBRIDGE_TUNNEL_URL" };
+
+  const command = findCloudflared({ env: process.env, home: homedir() });
+  if (!command) {
+    log("no cloudflared found, staying on this Wi-Fi only: install it with `winget install --id Cloudflare.cloudflared`, then restart DSH Desktop");
+    return null;
+  }
+
+  const origin = localOrigin();
+  let port;
+  try {
+    port = new URL(origin).port || "8787";
+  } catch {
+    log(`cloudflare tunnel skipped: ${origin} is not a usable local origin`);
+    return null;
+  }
+
+  try {
+    const tunnel = await startQuickTunnel({
+      command,
+      origin: `http://127.0.0.1:${port}`,
+      dataDir: bridgeDataDir(),
+      log,
+      timeoutMs: TUNNEL_TIMEOUT_MS,
+    });
+    return { origin: tunnel.url, accessKey: ensureAccessKey(bridgeDataDir()), how: tunnel.reused ? "cloudflare (existing tunnel)" : "cloudflare" };
+  } catch (error) {
+    log(`cloudflare tunnel failed, staying on this Wi-Fi only: ${textFromError(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Ask a bridge the plugin started to stop, so it can be respawned with a new
+ * address. A bridge the user launched themselves is never touched: the health
+ * endpoint reports whether it was autostarted, and only that flag authorises this.
+ */
+async function stopBridge(origin, log) {
+  let response;
+  try {
+    response = await fetch(`${origin}/api/local/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (error) {
+    log(`could not ask the bridge to stop: ${textFromError(error)}`);
+    return false;
+  }
+  if (response.status === 409) {
+    const body = await response.json().catch(() => ({}));
+    log(`the bridge is staying on its current address: ${body?.error ?? "an Agent turn is still running"}`);
+    return false;
+  }
+  if (!response.ok) {
+    log(`the bridge refused to stop (${response.status})`);
+    return false;
+  }
+  const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (!(await bridgeIsReady(origin))) return true;
+  }
+  log("the bridge accepted the stop request but is still listening");
+  return false;
+}
+
+function remoteEnv(remote) {
+  return {
+    AGENTBRIDGE_PUBLIC_ORIGIN: remote.origin,
+    ...(remote.accessKey ? { AGENTBRIDGE_ACCESS_KEY: remote.accessKey } : {}),
+  };
+}
+
+/**
+ * Bring the bridge up in the best mode available, without blocking DSH startup.
+ *
+ * A bridge on loopback is useful within a second (same Wi-Fi works), while a
+ * public address needs a tunnel, which takes longer and needs cloudflared. So the
+ * local bridge always goes first and the public address is applied right after by
+ * restarting that same child — a restart the phone barely notices, because
+ * sessions, devices and the access key all live on disk.
+ */
+async function bringUpBridge(log) {
+  const origin = localOrigin();
+  await startBridge(origin, log);
+  if (!remoteAllowed()) return;
+
+  const health = await bridgeHealth(origin);
+  if (!health) return; // startBridge already logged why nothing came up.
+
+  const remote = await resolveRemoteOrigin(log);
+  if (!remote) return;
+  if (health.advertisedOrigin === remote.origin && (!remote.accessKey || health.accessKeyRequired === true)) {
+    log(`remote mode already active: ${remote.origin}`);
+    return;
+  }
+  if (health.autostart !== true) {
+    log(
+      `the bridge already running at ${origin} was not started by this plugin, so its address cannot be changed. `
+      + `Stop it (or restart DSH Desktop after closing it) to switch to ${remote.origin}.`,
+    );
+    return;
+  }
+  if (!(await stopBridge(origin, log))) return;
+  if (await startBridge(origin, log, remoteEnv(remote))) {
+    log(`remote mode ready: ${remote.origin} (via ${remote.how})`);
+    return;
+  }
+  log("the bridge did not come up with the public address, restarting it on this Wi-Fi only");
+  await startBridge(origin, log);
 }
 
 function clipped(value, limit) {
@@ -988,6 +1149,28 @@ export class PhoneConnections {
   }
 }
 
+/**
+ * What the user needs to know about the address they are about to scan.
+ *
+ * A public tunnel URL works from any network but is reachable by anyone holding
+ * it, so the key inside the QR is the only door. A LAN address needs no warning
+ * beyond "be on the same Wi-Fi".
+ */
+function pairingAddressNote(url) {
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return "扫码后若提示「将要访问」，点「继续访问」即可。";
+  }
+  const privateHost = host === "127.0.0.1"
+    || /^10\./.test(host)
+    || /^192\.168\./.test(host)
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+  if (privateHost) return "手机需与电脑连同一个 Wi-Fi。扫码后若提示「该地址为 IP 地址」，点「继续访问」即可。";
+  return "这是公网地址，手机用流量也能打开；二维码里已带访问密钥，别把它转发给别人。";
+}
+
 function apply(ctx) {
   const connections = new PhoneConnections(ctx);
   ctx.commands.register({
@@ -1010,11 +1193,11 @@ function apply(ctx) {
             `项目：${registration.project.cwd}`,
             `会话：${agent.session.id}`,
             `模型：${model}`,
-            "手机需与电脑连同一个 Wi-Fi。扫码后若提示「该地址为 IP 地址」或「将要访问」，点「继续访问」即可。",
+            pairingAddressNote(registration.pairing.url),
           ].join("\n\n"),
         };
       } catch (error) {
-        const origin = String(process.env.AGENTBRIDGE_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, "");
+        const origin = localOrigin();
         return {
           kind: "error",
           text: isBridgeAbsent(error)
@@ -1027,13 +1210,12 @@ function apply(ctx) {
 
   // Bring the bridge up in the background as soon as the plugin loads, so by the
   // time the user types /phone the local service is already there. Deliberately
-  // not awaited: a slow spawn must never delay desktop startup, and the user
-  // still gets the manual steps from /phone when nothing came up. The reason is
-  // logged instead of swallowed, because "nothing happened" is undiagnosable.
-  void startBridge(
-    String(process.env.AGENTBRIDGE_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, ""),
-    (message) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] ${message}`),
-  ).catch((error) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] auto-start crashed: ${textFromError(error)}`));
+  // not awaited: a slow spawn — and a Cloudflare tunnel takes seconds — must never
+  // delay desktop startup, and the user still gets the manual steps from /phone
+  // when nothing came up. The reason is logged instead of swallowed, because
+  // "nothing happened" is undiagnosable.
+  void bringUpBridge((message) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] ${message}`))
+    .catch((error) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] auto-start crashed: ${textFromError(error)}`));
 }
 
 export { apply, inject, name };

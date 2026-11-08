@@ -390,7 +390,17 @@ export async function createBridge(options = {}) {
     const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
     try {
       if (req.method === "GET" && url.pathname === "/api/health") {
-        return json(res, shuttingDown ? 503 : 200, { ok: !shuttingDown, shuttingDown, lastSeq: eventStore.lastSeq });
+        // The advertised origin is public information (it is printed inside every
+        // QR code), and exposing it here is what lets the DSH plugin notice that a
+        // running bridge still advertises a stale address.
+        return json(res, shuttingDown ? 503 : 200, {
+          ok: !shuttingDown,
+          shuttingDown,
+          lastSeq: eventStore.lastSeq,
+          advertisedOrigin: config.advertisedOrigin,
+          accessKeyRequired: Boolean(config.accessKey),
+          autostart: config.autostart === true,
+        });
       }
 
       if (shuttingDown) throw Object.assign(new Error("AgentBridge is shutting down"), { statusCode: 503, code: "BRIDGE_SHUTTING_DOWN" });

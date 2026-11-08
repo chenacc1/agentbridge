@@ -99,6 +99,7 @@ Echo 适配器不接触任何 AI 工具，只验证「CLI → 本机 Bridge → 
 
 | 场景 | 模式 | 手机要求 |
 |---|---|---|
+| 什么都不装、也不连同一个 Wi-Fi（DSH 插件默认） | Cloudflare Tunnel（自动） | 只需浏览器 |
 | 同一可信 Wi-Fi | 局域网 | 浏览器 / 微信 |
 | 跨网络，但属同一私有网络 | Tailscale | 同一 tailnet |
 | Tailscale 不稳定 | ZeroTier | 同一私有网络 |
@@ -176,6 +177,14 @@ node .\bin\agentbridge.js phone --agent codex --session <thread-id>
 前提：DSH Desktop 已安装，且存在桌面 profile `%USERPROFILE%\.dsh\profiles\desktop\package.json`（或由 `DSH_HOME` 指定）。
 
 **第 0 步：桥。** 插件是遥控器，桥是基站。从 0.2.0 起桥随插件一起安装，**DSH Desktop 启动时插件会自己在后台把它拉起来**，正常情况你什么都不用敲。
+
+从 0.3.0 起，插件默认再开一条 **Cloudflare 隧道**，把桥映射成公网 https 域名，于是手机不必和电脑在同一个 Wi-Fi——扫描、出差、用流量都能开。这一步需要一个 Cloudflare 官方小工具：
+
+```powershell
+winget install --id Cloudflare.cloudflared
+```
+
+没装也不影响使用，只是退回"手机与电脑同一 Wi-Fi"。想一直走局域网，设 `AGENTBRIDGE_NO_TUNNEL=1`；想用固定域名，去 Cloudflare 建命名隧道并把 `AGENTBRIDGE_PUBLIC_ORIGIN` 指向它。
 
 只有自动启动失败（沙箱限制、端口被占）才需要手动来一条：
 

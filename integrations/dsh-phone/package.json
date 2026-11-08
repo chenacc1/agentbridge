@@ -1,6 +1,6 @@
 {
   "name": "@chenacc/dsh-agentbridge",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "AgentBridge for DSH Desktop: run /phone in a conversation to pair a phone console with that exact live Agent.",
   "license": "MIT",
   "type": "module",
@@ -10,6 +10,7 @@
   },
   "files": [
     "lib/index.js",
+    "lib/tunnel.js",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -44,7 +45,7 @@
     }
   },
   "dependencies": {
-    "@chenacc/agentbridge": "^0.1.1"
+    "@chenacc/agentbridge": "^0.1.2"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-commands": "^0.1.0-rc.7",

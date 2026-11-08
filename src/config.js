@@ -166,6 +166,10 @@ export function loadConfig(env = process.env, workspace = process.cwd()) {
     pairingTtlMs: Number.parseInt(env.AGENTBRIDGE_PAIRING_TTL_MS ?? "300000", 10),
     sessionTtlMs: Number.parseInt(env.AGENTBRIDGE_SESSION_TTL_MS ?? "259200000", 10),
     machineName: env.AGENTBRIDGE_MACHINE_NAME ?? os.hostname(),
+    // Set by the DSH plugin when it spawns the bridge itself. It lets the plugin
+    // recognise its own child in /api/health and restart it to change the public
+    // address, without ever touching a bridge the user started by hand.
+    autostart: env.AGENTBRIDGE_AUTOSTART === "1",
     // Outbound notifications: unset webhook means the feature is simply off.
     notifyWebhook: pick(env, "AGENTBRIDGE_NOTIFY_WEBHOOK", notifyFile.webhook),
     notifyFormat: pick(env, "AGENTBRIDGE_NOTIFY_FORMAT", notifyFile.format ?? "json").toLowerCase(),
