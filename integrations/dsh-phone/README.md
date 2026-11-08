@@ -6,7 +6,7 @@
 
 AgentBridge 的 DSH Desktop 集成插件。在某个项目会话里执行 `/phone`，把**屏幕上那一条** live Agent 会话接到手机控制台：手机扫码后可以发消息、审批、切换模型、停止任务，桌面与手机看到同一份事件流。
 
-![手机端控制台](./assets/phone-console-1.png)
+![手机端控制台：扫码后接管的是屏幕上那一条会话](./assets/hero-phone.jpg)
 
 一条命令装进当前 profile：
 

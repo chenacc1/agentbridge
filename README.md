@@ -8,23 +8,29 @@
 
 **一条命令，把手机变成这台电脑上 Agent 的遥控器。** 微信扫码即用，不用装 App，也不用和电脑连同一个 Wi-Fi。
 
-| 桌面端在干活 | 手机扫一扫就接管 | 手机端同一份对话 |
-|---|---|---|
-| <img src="./docs/assets/screen-desktop-console.jpg" alt="桌面端控制台" width="330" /> | <img src="./docs/assets/screen-mobile-1.png" alt="手机端控制台 1" width="180" /> | <img src="./docs/assets/screen-mobile-2.png" alt="手机端控制台 2" width="180" /> |
+<img src="./docs/assets/hero-phone.jpg" alt="手机端控制台：语音/文字发指令，Agent 流式回复，与桌面同一份对话" width="240" align="right" />
+
+在电脑上跑着的 Claude Code / Codex / DeepSeek Harness / DSH Desktop 会话，执行 `/phone` 会出现一次性二维码：
+
+- 手机扫码后**接管的就是屏幕上那一条对话**，不是新建一个"类似的"会话；
+- 消息、工具调用、审批卡片、模型切换、停止任务，两端看到的是同一份事件流；
+- 电脑始终是唯一执行端，凭据和文件访问不出本机。
 
 ```powershell
 npx @chenacc/agentbridge        # 起桥并直接打印二维码
 ```
 
-然后在 Claude Code / Codex / DSH Desktop 里输入 `/phone`，扫二维码即可。凭据和文件访问始终留在本机，手机只下发命令。
+然后在 Claude Code / Codex / DSH Desktop 里输入 `/phone`，扫二维码即可。
 
 > 觉得有用就给个 star：[github.com/chenacc1/agentbridge](https://github.com/chenacc1/agentbridge) —— 不点也不影响任何功能，只影响我有没有动力继续写。
+
+![桌面端控制台：左侧是 Agent / 项目 / 会话三级导航，右侧是同一段对话与工具活动](./docs/assets/hero-desktop.jpg)
 
 手机与桌面共享同一份可追加事件流，因此消息、工具活动、审批和任务状态始终同步。电脑是唯一的执行端：手机只运行界面，不运行 Agent，也拿不到任何供应商凭据。
 
 默认走 Cloudflare 隧道：手机用流量、在外地都能打开；隧道对外开放，因此自动带一道访问密钥门禁。
 
-**当前版本：** 桥 `@chenacc/agentbridge` **0.2.0** · DSH 插件 `@chenacc/dsh-agentbridge` **0.4.0**（两个包各自发布，见文末「版本与发布」）。
+**当前版本：** 桥 `@chenacc/agentbridge` **0.2.1** · DSH 插件 `@chenacc/dsh-agentbridge` **0.4.1**（两个包各自发布，见文末「版本与发布」）。
 
 ## 它是怎么工作的
 
