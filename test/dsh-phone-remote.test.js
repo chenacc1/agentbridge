@@ -23,7 +23,13 @@ const server = createServer((req, res) => {
       autostart: process.env.AGENTBRIDGE_AUTOSTART === "1",
     }));
   }
-  if (req.url === "/api/local/shutdown") {
+  if (req.url === "/api/local/autostart/shutdown") {
+    // The real bridge only accepts this with the token it was spawned with, so the
+    // stub refuses anything else: a permissive stub would hide a broken handshake.
+    if (req.headers["x-agentbridge-autostart"] !== process.env.AGENTBRIDGE_AUTOSTART_TOKEN) {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ error: "Autostart token required" }));
+    }
     res.end(JSON.stringify({ accepted: true }));
     setImmediate(() => { server.close(); process.exit(0); });
     return;

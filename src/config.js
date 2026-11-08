@@ -170,6 +170,10 @@ export function loadConfig(env = process.env, workspace = process.cwd()) {
     // recognise its own child in /api/health and restart it to change the public
     // address, without ever touching a bridge the user started by hand.
     autostart: env.AGENTBRIDGE_AUTOSTART === "1",
+    // Shared secret between the plugin that spawned this bridge and the bridge
+    // itself, so the plugin may ask for a restart to change the advertised address
+    // without handing that power to anything else that can reach loopback.
+    autostartToken: (env.AGENTBRIDGE_AUTOSTART_TOKEN ?? "").trim() || null,
     // Outbound notifications: unset webhook means the feature is simply off.
     notifyWebhook: pick(env, "AGENTBRIDGE_NOTIFY_WEBHOOK", notifyFile.webhook),
     notifyFormat: pick(env, "AGENTBRIDGE_NOTIFY_FORMAT", notifyFile.format ?? "json").toLowerCase(),

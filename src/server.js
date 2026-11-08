@@ -386,6 +386,25 @@ export async function createBridge(options = {}) {
     return shutdownPromise;
   };
 
+  /**
+   * A restart requested by the plugin must not cut a running Agent turn in half.
+   *
+   * The plugin retries on the next desktop launch in that case; refusing is the
+   * safer answer than silently killing work the user is waiting on.
+   */
+  const refuseWhenBusy = () => {
+    const active = sessions.list().filter((session) => ["starting", "running", "stopping"].includes(session.status));
+    if (!active.length) return;
+    throw Object.assign(new Error("仍有 Agent 任务正在运行，请先停止任务再关闭 Bridge"), {
+      statusCode: 409,
+      code: "ACTIVE_SESSIONS",
+      diagnostics: {
+        count: active.length,
+        sessions: active.map(({ id, title, status, adapterId }) => ({ id, title, status, adapterId })),
+      },
+    });
+  };
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
     try {
@@ -654,6 +673,31 @@ export async function createBridge(options = {}) {
       // point remain authenticated (and gated by the access key when enabled).
       if (req.method === "GET" && await serveStatic(res, url.pathname, url.search)) return;
 
+      // The DSH plugin starts this bridge itself and sometimes has to restart it,
+      // because the address it advertises (cloudflared hostname) only exists after
+      // the tunnel is up. Restarting needs a stop, and a stop needs an
+      // authorisation: loopback alone would let any local page POST here, so the
+      // caller must also present the token the plugin generated when it spawned
+      // this process. The token lives in the bridge's data directory, which keeps
+      // it out of the command line and out of the logs.
+      if (req.method === "POST" && url.pathname === "/api/local/autostart/shutdown") {
+        if (!isLoopback(req.socket.remoteAddress)) throw Object.assign(new Error("Local access only"), { statusCode: 403 });
+        if (!config.autostartToken || !keyMatches(req.headers["x-agentbridge-autostart"], config.autostartToken)) {
+          throw Object.assign(new Error("Autostart token required"), { statusCode: 401 });
+        }
+        refuseWhenBusy();
+        shuttingDown = true;
+        json(res, 202, { accepted: true, message: "AgentBridge is restarting to change its public address" });
+        setImmediate(() => {
+          void shutdown().catch((error) => {
+            console.error("AgentBridge safe shutdown failed", error);
+            shuttingDown = false;
+            shutdownPromise = null;
+          });
+        });
+        return;
+      }
+
       requireAccessKey(req, url, config);
       const device = pairing.authenticate(requestToken(req));
       if (!device) throw Object.assign(new Error("Authentication required"), { statusCode: 401 });
@@ -794,17 +838,7 @@ export async function createBridge(options = {}) {
       let match;
       if (req.method === "POST" && url.pathname === "/api/local/shutdown") {
         if (!isLoopback(req.socket.remoteAddress)) throw Object.assign(new Error("Local access only"), { statusCode: 403 });
-        const active = sessions.list().filter((session) => ["starting", "running", "stopping"].includes(session.status));
-        if (active.length) {
-          throw Object.assign(new Error("仍有 Agent 任务正在运行，请先停止任务再关闭 Bridge"), {
-            statusCode: 409,
-            code: "ACTIVE_SESSIONS",
-            diagnostics: {
-              count: active.length,
-              sessions: active.map(({ id, title, status, adapterId }) => ({ id, title, status, adapterId })),
-            },
-          });
-        }
+        refuseWhenBusy();
         shuttingDown = true;
         json(res, 202, { accepted: true, message: "AgentBridge 正在安全停止" });
         setImmediate(() => {

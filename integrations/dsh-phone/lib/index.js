@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureAccessKey, findCloudflared, startQuickTunnel } from "./tunnel.js";
+import { ensureAccessKey, ensureAutostartToken, findCloudflared, readAutostartToken, startQuickTunnel } from "./tunnel.js";
 
 const name = "agentbridge-dsh-phone";
 // `agents` is not optional: creating a conversation from the phone asks the agent
@@ -198,6 +198,9 @@ async function startBridge(origin, log = () => {}, extraEnv = {}) {
     // Marks this child as the plugin's own, so a later launch may stop it to pick
     // up a new address. A bridge the user started by hand never gets this flag.
     AGENTBRIDGE_AUTOSTART: "1",
+    // The bridge only accepts a restart request carrying this token, which is how
+    // the advertised address changes once a tunnel exists.
+    AGENTBRIDGE_AUTOSTART_TOKEN: ensureAutostartToken(dataDir),
     ...extraEnv,
   };
   // Under Electron `process.execPath` is DSH Desktop itself, not node: launching
@@ -326,11 +329,16 @@ async function resolveRemoteOrigin(log) {
  * endpoint reports whether it was autostarted, and only that flag authorises this.
  */
 async function stopBridge(origin, log) {
+  const token = readAutostartToken(bridgeDataDir());
+  if (!token) {
+    log("cannot restart the bridge: its autostart token is missing");
+    return false;
+  }
   let response;
   try {
-    response = await fetch(`${origin}/api/local/shutdown`, {
+    response = await fetch(`${origin}/api/local/autostart/shutdown`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-agentbridge-autostart": token },
       body: "{}",
       signal: AbortSignal.timeout(5_000),
     });

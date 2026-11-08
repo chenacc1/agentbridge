@@ -74,6 +74,10 @@ export function accessKeyPath(dataDir) {
   return path.join(dataDir, "access-key");
 }
 
+export function autostartTokenPath(dataDir) {
+  return path.join(dataDir, "autostart-token");
+}
+
 /**
  * The key that gates a publicly exposed bridge.
  *
@@ -82,17 +86,40 @@ export function accessKeyPath(dataDir) {
  * out of its own bridge.
  */
 export function ensureAccessKey(dataDir, { readFile = readFileSync, writeFile = writeFileSync, mkdir = mkdirSync, random } = {}) {
-  const target = accessKeyPath(dataDir);
+  return ensureSecret(accessKeyPath(dataDir), dataDir, { readFile, writeFile, mkdir, random });
+}
+
+/**
+ * The secret that lets this plugin ask its own bridge to restart.
+ *
+ * A restart is how the advertised address changes (the tunnel hostname only
+ * exists once cloudflared is up), and the bridge accepts that request only from
+ * loopback *with this token* — so a random local page cannot stop the bridge, and
+ * a second, unrelated DSH profile cannot either.
+ */
+export function ensureAutostartToken(dataDir, options = {}) {
+  return ensureSecret(autostartTokenPath(dataDir), dataDir, options);
+}
+
+export function readAutostartToken(dataDir, { readFile = readFileSync } = {}) {
+  try {
+    return String(readFile(autostartTokenPath(dataDir), "utf8")).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function ensureSecret(target, dataDir, { readFile = readFileSync, writeFile = writeFileSync, mkdir = mkdirSync, random } = {}) {
   try {
     const existing = String(readFile(target, "utf8")).trim();
     if (existing.length >= 16) return existing;
   } catch {
-    // No usable key on disk yet.
+    // No usable secret on disk yet.
   }
-  const key = (random ?? (() => randomBytes(24).toString("base64url")))();
+  const secret = (random ?? (() => randomBytes(24).toString("base64url")))();
   mkdir(dataDir, { recursive: true });
-  writeFile(target, key, "utf8");
-  return key;
+  writeFile(target, secret, "utf8");
+  return secret;
 }
 
 export function tunnelStatePath(dataDir) {
