@@ -1218,6 +1218,10 @@ function apply(ctx) {
             `会话：${agent.session.id}`,
             `模型：${model}`,
             pairingAddressNote(registration.pairing.url),
+            // A one-line, no-strings ask. Nothing fires on the user's behalf —
+            // market ranking reads stars, so this is where a willing user can
+            // help without leaving the conversation.
+            "觉得有用就给项目点个星：https://github.com/chenacc1/agentbridge（不影响任何功能）",
           ].join("\n\n"),
         };
       } catch (error) {

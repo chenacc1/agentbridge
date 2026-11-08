@@ -249,7 +249,11 @@ async function requestPhone(options) {
     console.log(`二维码图片 Markdown: ![微信扫码二维码](${result.qrImageUrl})`);
   }
   console.log(`微信扫码地址: ${result.pairing.url}`);
-  console.log(`电脑端会话: ${origin}/?session=${encodeURIComponent(result.session.id)}\n`);
+  console.log(`电脑端会话: ${origin}/?session=${encodeURIComponent(result.session.id)}`);
+  // Consent-based and once, at the very end: no network call, no token, nothing
+  // the user did not ask for. Star counts are how the plugin market ranks entries,
+  // so asking is fair — clicking on their behalf would not be.
+  console.log("觉得有用？给项目点个星：https://github.com/chenacc1/agentbridge\n");
   return result;
 }
 

@@ -1,16 +1,34 @@
 # AgentBridge
 
-> 用手机（微信扫码即可）查看、继续或停止这台电脑上正在运行的编程 Agent。凭据和文件访问始终留在本机，手机只下发命令。
->
-> 默认走 Cloudflare 隧道：手机用流量、在外地都能打开，不必和电脑连同一个 Wi-Fi；隧道对外开放，因此自动带一道访问密钥门禁。
+[![npm version](https://img.shields.io/npm/v/@chenacc/agentbridge?label=%40chenacc%2Fagentbridge&color=0e5a68)](https://www.npmjs.com/package/@chenacc/agentbridge)
+[![npm downloads](https://img.shields.io/npm/dm/@chenacc/agentbridge?color=0e5a68)](https://www.npmjs.com/package/@chenacc/agentbridge)
+[![DSH plugin](https://img.shields.io/npm/v/@chenacc/dsh-agentbridge?label=DSH%20plugin&color=2f6f7e)](https://www.npmjs.com/package/@chenacc/dsh-agentbridge)
+[![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![stars](https://img.shields.io/github/stars/chenacc1/agentbridge?style=social)](https://github.com/chenacc1/agentbridge/stargazers)
 
-![AgentBridge 架构：电脑上的本地 Bridge 连接已配对手机，并调用获准的编程 Agent 适配器。](./docs/assets/architecture.svg)
+**一条命令，把手机变成这台电脑上 Agent 的遥控器。** 微信扫码即用，不用装 App，也不用和电脑连同一个 Wi-Fi。
+
+| 桌面端在干活 | 手机扫一扫就接管 | 手机端同一份对话 |
+|---|---|---|
+| <img src="./docs/assets/screen-desktop-console.jpg" alt="桌面端控制台" width="330" /> | <img src="./docs/assets/screen-mobile-1.png" alt="手机端控制台 1" width="180" /> | <img src="./docs/assets/screen-mobile-2.png" alt="手机端控制台 2" width="180" /> |
+
+```powershell
+npx @chenacc/agentbridge        # 起桥并直接打印二维码
+```
+
+然后在 Claude Code / Codex / DSH Desktop 里输入 `/phone`，扫二维码即可。凭据和文件访问始终留在本机，手机只下发命令。
+
+> 觉得有用就给个 star：[github.com/chenacc1/agentbridge](https://github.com/chenacc1/agentbridge) —— 不点也不影响任何功能，只影响我有没有动力继续写。
 
 手机与桌面共享同一份可追加事件流，因此消息、工具活动、审批和任务状态始终同步。电脑是唯一的执行端：手机只运行界面，不运行 Agent，也拿不到任何供应商凭据。
 
-**当前版本：** 桥 `@chenacc/agentbridge` **0.1.4** · DSH 插件 `@chenacc/dsh-agentbridge` **0.3.3**（两个包各自发布，见文末「版本与发布」）。
+默认走 Cloudflare 隧道：手机用流量、在外地都能打开；隧道对外开放，因此自动带一道访问密钥门禁。
+
+**当前版本：** 桥 `@chenacc/agentbridge` **0.2.0** · DSH 插件 `@chenacc/dsh-agentbridge` **0.4.0**（两个包各自发布，见文末「版本与发布」）。
 
 ## 它是怎么工作的
+
+![AgentBridge 架构：电脑上的本地 Bridge 连接已配对手机，并调用获准的编程 Agent 适配器。](./docs/assets/architecture.svg)
 
 ![三端结构：手机控制面、本地 Bridge、电脑执行端](./docs/assets/keyframe-02-three-tier.jpg)
 
@@ -33,6 +51,7 @@
 因为上行与下行共用同一条事件流，桌面端和手机看到的是同一份状态，而不是两套各自猜测的界面。
 
 > 本文中标注为「分镜关键帧」的图片是讲解视频的概念示意图，用于说明结构关系；真实界面见下文「界面」一节。
+
 
 ## 主要能力
 

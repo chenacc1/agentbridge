@@ -1,9 +1,25 @@
 # @chenacc/dsh-agentbridge
 
+[![npm version](https://img.shields.io/npm/v/@chenacc/dsh-agentbridge?color=2f6f7e)](https://www.npmjs.com/package/@chenacc/dsh-agentbridge)
+[![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![stars](https://img.shields.io/github/stars/chenacc1/agentbridge?style=social)](https://github.com/chenacc1/agentbridge/stargazers)
+
 AgentBridge 的 DSH Desktop 集成插件。在某个项目会话里执行 `/phone`，把**屏幕上那一条** live Agent 会话接到手机控制台：手机扫码后可以发消息、审批、切换模型、停止任务，桌面与手机看到同一份事件流。
+
+![手机端控制台](./assets/phone-console-1.png)
+
+一条命令装进当前 profile：
+
+```powershell
+cd "$env:USERPROFILE\.dsh\profiles\desktop"; pnpm add @chenacc/dsh-agentbridge@latest
+```
+
+重启 DSH Desktop，在项目会话里输入 `/phone`——二维码默认就是公网地址，手机用流量也能打开。
 
 - 精确绑定当前会话：会话 ID、项目目录、provider / 模型都取自真实会话，不是新建一个"类似的"会话。
 - 电脑始终是唯一执行端：凭据和文件访问留在本机，手机只下发命令。
+
+> 觉得有用就给主仓库点个 star：[chenacc1/agentbridge](https://github.com/chenacc1/agentbridge) —— 不影响任何功能。
 
 ## 前置条件（重要）
 
