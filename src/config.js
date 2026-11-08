@@ -105,14 +105,50 @@ function parseProjects(raw, workspace) {
  * end up in a tracked file. The bridge's own data directory is git-ignored, so a
  * small JSON file there is the honest place for it; environment variables still win
  * when both are present, which keeps `setx` and one-off experiments working.
+ *
+ * `legacyFiles` exists because the data directory can move under the user's feet:
+ * the DSH plugin started hosting the bridge and gave it its own state directory,
+ * which silently left notifications configured in the old one. When the current
+ * directory has no settings but an old one does, adopt them once and say so — the
+ * alternative is a feature that stops working with no explanation.
  */
-function readNotifyFile(dataDir) {
-  try {
-    const parsed = JSON.parse(readFileSync(path.join(dataDir, "notify.json"), "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
+function readNotifyFile(dataDir, legacyFiles = []) {
+  const own = path.join(dataDir, "notify.json");
+  const parsed = readJsonObject(own);
+  if (parsed) return parsed;
+
+  for (const candidate of legacyFiles) {
+    const adopted = readJsonObject(candidate);
+    if (!adopted) continue;
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(own, JSON.stringify(adopted, null, 2), "utf8");
+      console.error(`Notifications: adopted settings from ${candidate} into ${own}`);
+    } catch {
+      // A read-only data directory still gets to use the settings for this run.
+    }
+    return adopted;
   }
+  return {};
+}
+
+function readJsonObject(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Candidate files a moved data directory may have left behind. */
+export function legacyNotifyPaths(env = process.env, workspace = process.cwd()) {
+  const fromEnv = String(env.AGENTBRIDGE_NOTIFY_IMPORT ?? "")
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => (/notify\.json$/i.test(entry) ? path.resolve(entry) : path.join(path.resolve(entry), "notify.json")));
+  return [...fromEnv, path.join(path.resolve(workspace), ".agentbridge", "notify.json")];
 }
 
 function pick(env, key, fallback) {
@@ -153,7 +189,7 @@ export function loadConfig(env = process.env, workspace = process.cwd()) {
   const advertisedOrigin = publicOrigin || `http://${firstLanAddress()}:${port}`;
   const accessKey = (env.AGENTBRIDGE_ACCESS_KEY ?? "").trim() || null;
   const dataDir = path.resolve(env.AGENTBRIDGE_DATA_DIR ?? path.join(workspace, ".agentbridge"));
-  const notifyFile = readNotifyFile(dataDir);
+  const notifyFile = readNotifyFile(dataDir, legacyNotifyPaths(env, workspace));
 
   return {
     host,

@@ -386,6 +386,9 @@ agentbridge phone --agent deepseek-harness
 | `AGENTBRIDGE_SESSION_TTL_MS` | `259200000` | 设备会话有效期（72 小时） |
 | `AGENTBRIDGE_CLAUDE_MODEL` | 供应商默认 | 可选的 Claude / Kimi 模型 ID |
 | `AGENTBRIDGE_NOTIFY_WEBHOOK` | 未设置 | 通知 Webhook；未设置时该功能静默 |
+| `AGENTBRIDGE_NOTIFY_IMPORT` | 未设置 | 通知设置存在旧数据目录时，指向它一次即可自动迁过来 |
+
+> 通知设置（webhook / token / 静默开关）保存在**桥的数据目录**下的 `notify.json`，默认是 `%USERPROFILE%\.agentbridge`。DSH 插件接管网关后数据目录换过位置，老配置如果留在原来的 `.agentbridge` 里，用 `AGENTBRIDGE_NOTIFY_IMPORT=<旧目录>` 启动一次就会自动迁过去；也可以直接在桌面控制台的「通知」面板重填一次。桥启动日志里有一行 `Notifications: pushplus/clawbot` 或 `Notifications: off — no webhook configured in …`，能直接看出它到底读到了哪个文件。
 
 **跨网络（CLI 与插件都认）：**
 

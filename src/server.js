@@ -994,6 +994,17 @@ export async function startBridge() {
     console.log(`Remote path: ${bridge.config.remoteProvider} → ${bridge.config.advertisedOrigin}`);
   }
   console.log(`WeChat scan target: ${bridge.getCurrentPairing().url}`);
+  // Notifications are silent by design, which once hid the fact that the config
+  // was being read from a directory that did not have it (the data directory moved
+  // when the DSH plugin started hosting the bridge). Say where it looked.
+  if (bridge.notifier.enabled) {
+    console.log(`Notifications: ${bridge.notifier.format}${bridge.notifier.channel ? `/${bridge.notifier.channel}` : ""}${bridge.notifier.muted ? " (muted)" : ""}`);
+  } else {
+    console.log(
+      `Notifications: off — no webhook configured in ${path.join(bridge.config.dataDir, "notify.json")} `
+      + "(set it in the desktop console, or point AGENTBRIDGE_NOTIFY_IMPORT at an older .agentbridge folder)",
+    );
+  }
   // Silence here used to mean a QR encoding an address the phone could never reach.
   if (new URL(bridge.config.advertisedOrigin).hostname === "127.0.0.1") {
     console.warn(

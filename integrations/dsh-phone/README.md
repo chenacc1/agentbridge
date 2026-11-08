@@ -105,6 +105,9 @@ pnpm add @chenacc/dsh-agentbridge@latest
 | `AGENTBRIDGE_NO_DOWNLOAD` | 未设置 | 设为 `1` 禁止插件自动下载 `cloudflared`（会退回局域网） |
 | `AGENTBRIDGE_CLOUDFLARED_URL` | 官方 GitHub Releases | 换一个下载源（内网镜像之类）；下载后照样要过 `--version` 校验 |
 | `AGENTBRIDGE_TAILSCALE` / `AGENTBRIDGE_ZEROTIER` | 自动检测 | 手动指定 Tailscale 可执行文件 / ZeroTier 的 IPv4 |
+| `AGENTBRIDGE_NOTIFY_IMPORT` | 未设置 | 通知设置（`notify.json`）留在旧数据目录时，指向它一次即可自动迁到 `~/.agentbridge` |
+
+> 通知配置跟着桥的数据目录走。插件把数据目录定在 `~/.agentbridge`，如果你早先用仓库里的 `npm start` 配过通知，那份 `notify.json` 还留在仓库的 `.agentbridge` 下——设一次 `AGENTBRIDGE_NOTIFY_IMPORT=<仓库路径>` 重启即可自动迁过来。桥启动日志会打印 `Notifications: pushplus/clawbot` 或 `Notifications: off — no webhook configured in …`。
 
 路径选择由桥包的 `@chenacc/agentbridge/remote` 负责，CLI 与插件共用同一份实现：同一个顺序、同一把访问密钥。当前实际走的是哪条，看 `/api/health` 的 `remoteProvider` 字段。
 
