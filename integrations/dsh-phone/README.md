@@ -105,7 +105,10 @@ pnpm remove @chenacc/dsh-agentbridge
 | 版本 | 需要 |
 |---|---|
 | 插件 0.1.x | DSH Desktop（`@deepseek-ai/dsh-commands`、`@deepseek-ai/cordis` 由 DSH 提供）、AgentBridge `0.1.x` |
-| 插件 0.3.x | 同上 + `cloudflared`（跨网络用；缺了会自动下载） |
+| 插件 0.2.x | 同上；桥随插件安装并由插件自动拉起 |
+| 插件 0.3.x | 同上 + 默认开 Cloudflare 隧道；`cloudflared` 缺了自动下载到 `~/.agentbridge/bin` |
+
+当前版本：插件 `0.3.3` / 桥 `0.1.4`。插件把隧道逻辑交给桥包（`@chenacc/agentbridge/tunnel`），所以 CLI 的 `/phone` 和这里用的是同一份实现、同一条隧道、同一把访问密钥。
 
 插件与 bridge 之间有一份集成版本号握手：bridge 侧要求的最低集成版本比插件旧时，手机端会提示"桌面端集成是旧版"，升级插件即可。
 

@@ -59,11 +59,28 @@ npm run uninstall:dsh-phone   # 现在会同时清理新旧两个名字
 
 自动启动后的状态目录是 `~\.agentbridge`（日志在 `~\.agentbridge\logs`），不会写进 `~\.dsh`。
 
+### 第 2.5 层：公网地址是否真的生效（0.3.0 起）
+
+从 0.3.0 起插件在桥起来之后还会开一条 Cloudflare 隧道，并把桥"搬"到那个公网地址上。判断方法很直接——看二维码下面那串 URL：
+
+| 看到什么 | 说明 | 下一步 |
+|---|---|---|
+| `https://xxx.trycloudflare.com/pair?...&key=...` | 远程模式生效 | 手机用流量扫，直接验证跨网络 |
+| `http://192.168.x.x:8787/pair?...` | 还停在局域网 | 看 `~\.agentbridge\logs\autostart.log` 与 DSH 日志里 `[agentbridge-dsh-phone]` 开头的行 |
+
+三种常见原因，都能在日志里看到对应的一句话：`cloudflared` 既没装也下不动；`AGENTBRIDGE_NO_TUNNEL=1`；正在跑的桥不是插件启的（比如手动 `npm start` 起的），插件不会去重启它。
+
+想单独验证隧道链路而不碰桌面，可以直接跑：
+
+```powershell
+npm run verify:remote   # 起真隧道 + 真桥，最后用公网地址打开配对页
+```
+
 ## 第 3 层：端到端（用户真正会做的事）
 
 1. 桥：正常情况下插件已经起好了（上面的状态目录能证明）；需要手动时 `npx @chenacc/agentbridge`，默认 8787；
 2. DSH Desktop 项目会话里 `/phone`；
-3. 手机与电脑同一可信 Wi-Fi，微信扫一扫；
+3. 微信扫一扫（公网地址时手机不必和电脑同一 Wi-Fi）；
 4. 在手机上依次验证：
    - 发一条消息 → 桌面端出现同一条用户消息，Agent 开始流式回复，手机同步滚动；
    - 触发一次审批（让 Agent 执行需要批准的命令）→ 手机出现审批卡片，点"允许"后桌面继续；
