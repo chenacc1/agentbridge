@@ -283,6 +283,8 @@ node .\bin\agentbridge.js phone --agent deepseek-harness
 
 若自动选择的局域网地址手机访问不到，显式指定 `AGENTBRIDGE_PUBLIC_ORIGIN`；Windows 防火墙提示时只放行「专用网络」。
 
+自动选地址时会跳过 `169.254.x.x`（网卡没拿到租约时的临时地址，手机根本路由不到）和 Hyper-V / WSL / 蓝牙这类虚拟网卡，优先真实的 Wi-Fi 或以太网地址。扫码后如果微信弹出「该地址为 IP 地址，请使用域名访问网站」，点「继续访问」即可；手机上不了网、或者只有手机流量没连同一个 Wi-Fi 时，二维码里的地址是打不开的。
+
 ## 安全边界
 
 ![访问边界：本地配对与管理接口只允许 loopback；远程访问使用私有网络或受访问密钥保护的隧道。](./docs/assets/security-boundaries.svg)
