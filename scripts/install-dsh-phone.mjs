@@ -48,4 +48,16 @@ await writeFile(profilePackagePath, `${JSON.stringify(profile, null, 2)}\n`, "ut
 console.log(`Installed @chenacc/dsh-agentbridge into ${installDir}`);
 console.log(`Updated Desktop profile: ${profilePackagePath}`);
 console.log(`Backup: ${backupPath}`);
+
+// A `file:` dependency is copied, not resolved, so the bridge this plugin normally
+// starts for itself is not installed by this path. Say so instead of letting the
+// developer wonder why autostart never fires and /phone only prints instructions.
+const bridgeInstalled = await exists(path.join(profileDir, "node_modules", "@chenacc", "agentbridge", "package.json"));
+if (!bridgeInstalled) {
+  console.log("");
+  console.log("Note: the local dev install does not resolve dependencies, so @chenacc/agentbridge is not here.");
+  console.log("  - the plugin will not auto-start a bridge on this profile;");
+  console.log("  - run the bridge from the repository instead: npm start   (or npx @chenacc/agentbridge)");
+  console.log("  - or install it into the profile: pnpm add @chenacc/agentbridge");
+}
 console.log("Restart DSH Desktop, open a project conversation, then type /phone.");

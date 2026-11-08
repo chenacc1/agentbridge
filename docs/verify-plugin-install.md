@@ -48,20 +48,20 @@ npm run uninstall:dsh-phone   # 现在会同时清理新旧两个名字
 
 ## 第 2 层：插件是否被 DSH 加载
 
-重启 DSH Desktop，在一个**项目会话**里输入 `/phone`。**故意先不要启动桥**，这样能一次验两件事：插件加载了、并且失败时给的是指路信息而不是干瞪眼。
+重启 DSH Desktop，在一个**项目会话**里输入 `/phone`。从 0.2.0 起插件加载时就会在后台把桥拉起来，所以这一层现在验的是"加载即起桥"：**先把桥停掉**（`Ctrl+C` 或杀掉 8787 的进程），再重启桌面。
 
 | 看到什么 | 说明 | 下一步 |
 |---|---|---|
-| 一段"插上已经加载，缺的是电脑上这个本地服务" + 三条 `git clone` / `npm install` / `npm start` 命令（0.1.1 起） | 插件加载成功，文案正确 | 起桥后再敲一次 |
-| 弹出二维码 + 配对链接 | 插件加载成功，桥也在跑 | 进入第 3 层 |
-| `无法连接 AgentBridge：<原始错误>`（没有那三条命令） | 插件已加载，但桥在线且拒绝了请求 | 看桥的终端输出，多半是配对码过期或令牌不对 |
+| 直接弹出二维码 + 配对链接 | 插件加载成功，且自动把桥拉起来了（0.2.0 的预期结果） | 进入第 3 层 |
+| 一段"插件本身已经加载，缺的是电脑上这个本地服务" + `npx @chenacc/agentbridge` | 插件加载成功，但自动启动失败（沙箱限制、端口被占、桥没装在 profile 里） | 手动起桥后再敲一次 |
+| `无法连接 AgentBridge：<原始错误>`（没有那段命令） | 插件已加载，但桥在线且拒绝了请求 | 看桥的终端输出，多半是配对码过期或令牌不对 |
 | 命令根本不存在（或被当成普通文本） | 插件没加载 | 查 `dsh.profile.bundles`、`node_modules/@chenacc/dsh-agentbridge` 是否存在、`%APPDATA%\DSH Desktop\logs` 里的报错 |
 
-第二种最容易被误判成"插件坏了"，其实是插件正常工作、只是缺前置。
+自动启动后的状态目录是 `~\.agentbridge`（日志在 `~\.agentbridge\logs`），不会写进 `~\.dsh`。
 
 ## 第 3 层：端到端（用户真正会做的事）
 
-1. 起桥：`npx @chenacc/agentbridge`（或仓库根 `npm start`），默认 8787；
+1. 桥：正常情况下插件已经起好了（上面的状态目录能证明）；需要手动时 `npx @chenacc/agentbridge`，默认 8787；
 2. DSH Desktop 项目会话里 `/phone`；
 3. 手机与电脑同一可信 Wi-Fi，微信扫一扫；
 4. 在手机上依次验证：
@@ -71,6 +71,7 @@ npm run uninstall:dsh-phone   # 现在会同时清理新旧两个名字
    - 停止 → 桌面端任务真的停下，不是只改了手机界面；
 5. 韧性：把桥 `Ctrl+C` 停掉再起，插件应自动重连，桌面日志**不该**出现每秒十条的 `Invalid DSH Desktop channel` 刷屏；
 6. 手机端不应出现"桌面端集成是旧版"的提示（出现就是 `INTEGRATION_VERSION` 落后，第 0 层脚本能提前抓到）。
+7. 手机端工作区列表里不该冒出奇怪的假项目条目（自动启动的 bridge 默认项目是用户主目录）。
 
 ## 第 4 层：干净机器（最有价值，也最容易省掉）
 
@@ -82,10 +83,10 @@ npm run uninstall:dsh-phone   # 现在会同时清理新旧两个名字
 
 做法：另一台 Windows（或新建一个本地用户账户，效果接近），只装 **DSH Desktop + Node 22+**，然后：
 
-1. 从市场装（或 `pnpm add` 一次），重启，`/phone`；
-2. 桥用一条命令起：`npx @chenacc/agentbridge`；要长期用再 `npm install -g @chenacc/agentbridge`。
+1. 从市场装，重启，直接 `/phone`——正常情况下桥由插件自己拉起，不需要额外命令；
+2. 如果第 1 步失败，回退到 `npx @chenacc/agentbridge` 并记录原因（沙箱拦 spawn？端口被占？Node 不在 PATH？）。
 
-**这仍是当前最大的体验断点**：插件装了但没起桥，`/phone` 只会把起桥步骤打印出来。彻底消掉它需要插件自己拉起桥（下一步 B）。
+这一层现在验的是"真的只装了桌面就能跑"，而不是"用户还得自己起桥"。
 
 ## 第 5 层：卸载是否干净
 
@@ -97,9 +98,13 @@ pnpm remove @chenacc/dsh-agentbridge
 
 重启后 `/phone` 应消失；`node_modules/@chenacc` 与 `@agentbridge` 不应残留空目录；profile 的 `package.json` 应回到安装前形态（我们留了 `.agentbridge-backup` / `.pre-market-backup`）。
 
-## 目前的实际状态（2026-11-05）
+注意：自动启动的桥是独立进程，**卸载插件不会杀掉它**。要收干净，结束掉监听 8787 的进程，并按需删除 `~\.agentbridge`。
 
-- 第 0 层：19 项全绿（含 `pnpm add` 实测），线上 `latest` = `0.1.1`；
-- 你的真实 profile 已迁移并升级：旧 `@agentbridge/dsh-phone` 已移除，`@chenacc/dsh-agentbridge@0.1.1` 已装入并写进 `dsh.profile.bundles`；备份在 `package.json.pre-market-backup`；
-- 第 2、3 层：**等你重启 DSH Desktop 后测**（先不启桥，验 0.1.1 的指路文案；再起桥验二维码）；
-- 第 4 层：还没做，且已知断点是"用户还得自己跑桥"——0.1.1 只是把这条断点讲清楚了，没消除它。
+## 目前的实际状态（2026-11-08）
+
+- 线上：插件 `0.2.0`、桥 `0.1.0`；`0.2.0` 起插件加载即自动拉起桥；
+- 第 0 层：19 项全绿（含 `pnpm add` 实测）；
+- 你的真实 profile：`@chenacc/dsh-agentbridge@0.2.0` + 依赖 `@chenacc/agentbridge@0.1.0`，bundles 已登记；
+- 已用线上产物实测自动启动：导入 profile 里的插件模块并 `apply()`，15 秒内 8787 起监听，进程正是 profile 里的 `@chenacc/agentbridge/src/server.js`；
+- 第 2、3 层：**等你重启 DSH Desktop 后人工验收**（重启前请先确认 8787 没有残留进程，否则看不到自动启动的效果）；
+- 第 4 层：待做（干净机器或新用户账户）。

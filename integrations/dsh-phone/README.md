@@ -61,6 +61,8 @@ pnpm add @chenacc/dsh-agentbridge@latest
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `AGENTBRIDGE_ORIGIN` | `http://127.0.0.1:8787` | 插件连接的 AgentBridge 地址；桥换了端口或走了隧道时设置它 |
+| `AGENTBRIDGE_DATA_DIR` | `~/.agentbridge`（自动启动时） | 桥的会话、配对与日志目录，不会写进 `~/.dsh` |
+| `AGENTBRIDGE_NO_AUTOSTART` | 未设置 | 设为 `1` 关掉"插件加载时自动起桥"，只保留 `/phone` 里的手动提示 |
 
 变量要设在**真正启动 DSH Desktop 的环境里**（插件读 `process.env`），不是设在跑 bridge 的终端里。
 

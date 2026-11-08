@@ -156,13 +156,20 @@ async function startBridge(origin) {
     // child-process machinery is dead weight on the common path.
     const { spawn } = await import("node:child_process");
     const child = spawn(process.execPath, [entry], {
-      // State belongs next to the user's DSH data, not in whatever directory the
-      // desktop happened to launch from.
-      cwd: process.env.DSH_HOME || homedir(),
+      // State gets its own directory: the bridge writes sessions, pairings and
+      // logs under AGENTBRIDGE_DATA_DIR, and dropping that inside the DSH data
+      // directory would mix two products' state in one place. The working
+      // directory stays the user's home so the bridge's default project is not
+      // some internal folder.
+      cwd: homedir(),
       detached: true,
       stdio: "ignore",
       windowsHide: true,
-      env: { ...process.env, AGENTBRIDGE_PORT: process.env.AGENTBRIDGE_PORT || port },
+      env: {
+        ...process.env,
+        AGENTBRIDGE_PORT: process.env.AGENTBRIDGE_PORT || port,
+        AGENTBRIDGE_DATA_DIR: process.env.AGENTBRIDGE_DATA_DIR || path.join(homedir(), ".agentbridge"),
+      },
     });
     child.unref();
   } catch {

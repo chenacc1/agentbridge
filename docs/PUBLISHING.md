@@ -2,6 +2,23 @@
 
 目标：让 `@chenacc/dsh-agentbridge` 出现在 DSH Desktop「设置 → 插件市场 → 发现」里，并且可以点一下安装。
 
+## 发版：打 tag，让 CI 发（配好后不用再点浏览器）
+
+`.github/workflows/publish.yml` 已经就位：推 `dsh-v*` tag 发插件、推 `bridge-v*` tag 发桥，走 npm 的 Trusted Publishing（OIDC），不需要 `NPM_TOKEN`，也不用人在浏览器里确认。
+
+一次性准备：
+
+1. `gh auth refresh -s workflow`（否则 GitHub 拒绝推送 workflow 文件——gh 的 OAuth token 默认没有 `workflow` 权限）；
+2. npmjs.com → 每个包 → **Settings → Trusted Publishing** → 添加 GitHub Actions：仓库 `chenacc1/agentbridge`、Workflow 填 `publish.yml`、Environment 留空。
+
+之后：
+
+```powershell
+git tag dsh-v0.2.2; git push origin dsh-v0.2.2
+```
+
+关于 token：`npm config set //registry.npmjs.org/:_authToken npm_...` 配的 granular token **只能通过认证**（`/-/whoami` 返回 200），发布仍然会被要求浏览器授权（EOTP）——npm 正在限制"能绕过 2FA 的 token 直接发布"。所以别把 token 当发布方案，用上面的 tag/CI 路径。
+
 ## B 已实现：插件加载时自动拉起桥（0.2.0）
 
 目标达成形态：用户从市场装完、重启 DSH Desktop，桥就已经在跑，`/phone` 直接出二维码，中间不需要终端。
