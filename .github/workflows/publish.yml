@@ -1,0 +1,57 @@
+name: Publish to npm
+
+# Release by tag:
+#   git tag dsh-v0.2.1 && git push origin dsh-v0.2.1        -> plugin
+#   git tag bridge-v0.1.1 && git push origin bridge-v0.1.1  -> bridge
+#
+# Uses npm Trusted Publishing (OIDC): no NPM_TOKEN, no browser confirmation.
+# One-time setup: npmjs.com -> the package -> Settings -> Trusted Publishing ->
+#   add GitHub Actions with repository chenacc1/agentbridge and workflow publish.yml.
+
+on:
+  push:
+    tags:
+      - "dsh-v*"
+      - "bridge-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing needs npm 11.6+
+      - name: Use a recent npm
+        run: npm install -g npm@latest
+
+      - name: Publish the DSH plugin
+        if: startsWith(github.ref_name, 'dsh-v')
+        working-directory: integrations/dsh-phone
+        run: |
+          node -e "
+            const m = require('./package.json');
+            if (m.private) throw new Error('package.json is private');
+            if (!m.dsh?.bundle?.patch) throw new Error('missing dsh.bundle.patch');
+            if (!m.repository?.url?.includes('chenacc1/agentbridge')) throw new Error('repository must point at the listed repo');
+            console.log('publishing', m.name + '@' + m.version);
+          "
+          npm publish --access public --provenance
+
+      - name: Publish the bridge
+        if: startsWith(github.ref_name, 'bridge-v')
+        run: |
+          node -e "
+            const m = require('./package.json');
+            if (m.private) throw new Error('package.json is private');
+            console.log('publishing', m.name + '@' + m.version);
+          "
+          npm publish --access public --provenance
