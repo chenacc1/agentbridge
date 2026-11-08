@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -180,6 +180,28 @@ async function startBridge(origin, log = () => {}) {
     return false;
   }
 
+  const dataDir = process.env.AGENTBRIDGE_DATA_DIR || path.join(homedir(), ".agentbridge");
+  const env = {
+    ...process.env,
+    AGENTBRIDGE_PORT: process.env.AGENTBRIDGE_PORT || port,
+    AGENTBRIDGE_DATA_DIR: dataDir,
+  };
+  // Under Electron `process.execPath` is DSH Desktop itself, not node: launching
+  // it with a .js path starts the app again and no server ever binds. Electron
+  // ships a Node runtime behind ELECTRON_RUN_AS_NODE, which is exactly this.
+  if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = "1";
+
+  // Keep the child's own output: when a spawned bridge dies, its stderr is the
+  // only place that says why (port in use, missing module, bad config).
+  let logFd = "ignore";
+  try {
+    const logDir = path.join(dataDir, "logs");
+    mkdirSync(logDir, { recursive: true });
+    logFd = openSync(path.join(logDir, "autostart.log"), "a");
+  } catch {
+    // No writable data dir: run without output capture rather than not at all.
+  }
+
   try {
     // Loaded lazily: the plugin normally runs with a bridge already up, so the
     // child-process machinery is dead weight on the common path.
@@ -192,18 +214,22 @@ async function startBridge(origin, log = () => {}) {
       // some internal folder.
       cwd: homedir(),
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", logFd, logFd],
       windowsHide: true,
-      env: {
-        ...process.env,
-        AGENTBRIDGE_PORT: process.env.AGENTBRIDGE_PORT || port,
-        AGENTBRIDGE_DATA_DIR: process.env.AGENTBRIDGE_DATA_DIR || path.join(homedir(), ".agentbridge"),
-      },
+      env,
     });
     child.unref();
   } catch (error) {
     log(`auto-start failed to spawn ${entry}: ${textFromError(error)}`);
     return false;
+  } finally {
+    if (typeof logFd === "number") {
+      try {
+        closeSync(logFd);
+      } catch {
+        // The child holds its own duplicate; nothing to recover here.
+      }
+    }
   }
 
   const deadline = Date.now() + AUTOSTART_TIMEOUT_MS;
