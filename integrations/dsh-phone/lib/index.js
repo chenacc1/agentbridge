@@ -4,7 +4,27 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureAccessKey, ensureAutostartToken, ensureCloudflared, findCloudflared, readAutostartToken, startQuickTunnel } from "./tunnel.js";
+
+/**
+ * The tunnel machinery lives in the bridge package, because the CLI needs exactly
+ * the same thing — `agentbridge phone` has to publish a public address too.
+ *
+ * Loaded lazily rather than at module scope: inside this repository the plugin
+ * sits in the bridge package's own tree with no `node_modules` entry to resolve,
+ * and a top-level await there would make the module impossible to even import
+ * (which is what the release check does). The published package always carries
+ * the dependency, so the relative fallback only runs for development and tests.
+ */
+let tunnelModule = null;
+async function tunnel() {
+  if (tunnelModule) return tunnelModule;
+  try {
+    tunnelModule = await import("@chenacc/agentbridge/tunnel");
+  } catch {
+    tunnelModule = await import("../../../src/tunnel.js");
+  }
+  return tunnelModule;
+}
 
 const name = "agentbridge-dsh-phone";
 // `agents` is not optional: creating a conversation from the phone asks the agent
@@ -200,7 +220,7 @@ async function startBridge(origin, log = () => {}, extraEnv = {}) {
     AGENTBRIDGE_AUTOSTART: "1",
     // The bridge only accepts a restart request carrying this token, which is how
     // the advertised address changes once a tunnel exists.
-    AGENTBRIDGE_AUTOSTART_TOKEN: ensureAutostartToken(dataDir),
+    AGENTBRIDGE_AUTOSTART_TOKEN: (await tunnel()).ensureAutostartToken(dataDir),
     ...extraEnv,
   };
   // Under Electron `process.execPath` is DSH Desktop itself, not node: launching
@@ -289,6 +309,7 @@ function bridgeDataDir() {
  * nothing in Program Files, removable by deleting one folder.
  */
 async function resolveCloudflared(log) {
+  const { findCloudflared, ensureCloudflared } = await tunnel();
   const installed = findCloudflared({ env: process.env, home: homedir() });
   if (installed) return installed;
 
@@ -315,6 +336,7 @@ async function resolveRemoteOrigin(log) {
   const explicit = String(process.env.AGENTBRIDGE_PUBLIC_ORIGIN ?? "").trim().replace(/\/$/, "");
   if (explicit) return { origin: explicit, accessKey: null, how: "AGENTBRIDGE_PUBLIC_ORIGIN" };
 
+  const { ensureAccessKey, startQuickTunnel } = await tunnel();
   const supplied = String(process.env.AGENTBRIDGE_TUNNEL_URL ?? "").trim().replace(/\/$/, "");
   if (supplied) return { origin: supplied, accessKey: ensureAccessKey(bridgeDataDir()), how: "AGENTBRIDGE_TUNNEL_URL" };
 
@@ -334,14 +356,14 @@ async function resolveRemoteOrigin(log) {
   }
 
   try {
-    const tunnel = await startQuickTunnel({
+    const started = await startQuickTunnel({
       command,
       origin: `http://127.0.0.1:${port}`,
       dataDir: bridgeDataDir(),
       log,
       timeoutMs: TUNNEL_TIMEOUT_MS,
     });
-    return { origin: tunnel.url, accessKey: ensureAccessKey(bridgeDataDir()), how: tunnel.reused ? "cloudflare (existing tunnel)" : "cloudflare" };
+    return { origin: started.url, accessKey: ensureAccessKey(bridgeDataDir()), how: started.reused ? "cloudflare (existing tunnel)" : "cloudflare" };
   } catch (error) {
     log(`cloudflare tunnel failed, staying on this Wi-Fi only: ${textFromError(error)}`);
     return null;
@@ -354,6 +376,7 @@ async function resolveRemoteOrigin(log) {
  * endpoint reports whether it was autostarted, and only that flag authorises this.
  */
 async function stopBridge(origin, log) {
+  const { readAutostartToken } = await tunnel();
   const token = readAutostartToken(bridgeDataDir());
   if (!token) {
     log("cannot restart the bridge: its autostart token is missing");

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { main, parseCliArguments, renderClaudePhoneSkill, renderCodexPhoneSkill } from "../src/cli.js";
+import { main, parseCliArguments, renderClaudePhoneSkill, renderCodexPhoneSkill, describeOrigin, resolvePublicOrigin } from "../src/cli.js";
 
 test("phone CLI parses an attached Claude conversation", () => {
   const parsed = parseCliArguments(["phone", "--agent", "claude", "--session", "session-123", "--cwd", "D:\\work"]);
@@ -55,4 +55,56 @@ test("Claude phone skill binds the official current session substitution", () =>
   );
   assert.doesNotMatch(skill, /\$ARGUMENTS/);
   assert.doesNotMatch(skill, /transcript\.jsonl/);
+});
+
+test("only addresses the phone cannot route to count as private", () => {
+  for (const origin of [
+    "http://127.0.0.1:8787/pair",
+    "http://192.168.0.2:8787",
+    "http://10.1.2.3:8787",
+    "http://172.20.0.5:8787",
+    "http://100.83.253.5:8787",
+    "http://desktop-mq3a4tb.local:8787",
+  ]) assert.equal(describeOrigin(origin), "private", origin);
+
+  for (const origin of [
+    "https://leonard-wave-fell-chubby.trycloudflare.com/pair?code=x",
+    "https://bridge.example.com",
+    "http://203.0.113.9:8787",
+  ]) assert.equal(describeOrigin(origin), "public", origin);
+});
+
+test("an explicit public origin wins and needs no tunnel", async () => {
+  const decided = await resolvePublicOrigin({ env: { AGENTBRIDGE_PUBLIC_ORIGIN: "https://bridge.example.com/" } });
+  assert.deepEqual(decided, { origin: "https://bridge.example.com", accessKey: null, how: "AGENTBRIDGE_PUBLIC_ORIGIN" });
+});
+
+test("a bridge that already publishes a public address is left alone", async () => {
+  const decided = await resolvePublicOrigin({
+    env: {},
+    health: { ok: true, advertisedOrigin: "https://already.trycloudflare.com" },
+  });
+  assert.equal(decided.origin, "https://already.trycloudflare.com");
+  assert.equal(decided.how, "already running");
+});
+
+test("a bridge stuck on a LAN address is reported, not silently restarted", async () => {
+  const messages = [];
+  const decided = await resolvePublicOrigin({
+    env: {},
+    health: { ok: true, advertisedOrigin: "http://192.168.0.2:8787" },
+    log: (message) => messages.push(message),
+  });
+  assert.equal(decided, null);
+  assert.ok(messages.some((message) => message.includes("192.168.0.2")), messages.join(" | "));
+});
+
+test("opting out of the tunnel keeps the QR code on this Wi-Fi", async () => {
+  const messages = [];
+  const decided = await resolvePublicOrigin({
+    env: { AGENTBRIDGE_NO_TUNNEL: "1" },
+    log: (message) => messages.push(message),
+  });
+  assert.equal(decided, null);
+  assert.ok(messages.some((message) => message.includes("AGENTBRIDGE_NO_TUNNEL")));
 });

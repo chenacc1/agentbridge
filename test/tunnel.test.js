@@ -14,7 +14,7 @@ import {
   findCloudflared,
   readTunnelState,
   startQuickTunnel,
-} from "../integrations/dsh-phone/lib/tunnel.js";
+} from "../src/tunnel.js";
 
 /** The banner cloudflared actually prints, wrapped across lines like it does. */
 const REAL_BANNER = `2026-11-08T14:20:00Z INF Thank you for trying Cloudflare Tunnel. Doing so, without a

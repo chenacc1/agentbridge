@@ -145,6 +145,8 @@ scripts\start-agentbridge.ps1 -CloudflareTunnel       # 3. 启动，窗口会打
 
 技能是纯文本文件，删掉对应的 `SKILL.md` 就等于卸载。
 
+二维码默认是**公网地址**（走 Cloudflare 隧道，手机用流量也能扫）。隧道要用的 `cloudflared` 缺了就自动下载到 `~/.agentbridge/bin`，和 DSH 插件共用同一套逻辑、同一个隧道和同一把访问密钥——DSH 那边已经开着隧道的话，CLI 直接复用，不会再起一条。只想在局域网用就设 `AGENTBRIDGE_NO_TUNNEL=1`；已经有自己的公网入口（命名隧道、Tailscale、ZeroTier）就设 `AGENTBRIDGE_PUBLIC_ORIGIN`。
+
 ### Claude Code
 
 ```powershell

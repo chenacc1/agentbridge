@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
+import { ensureAccessKey, ensureCloudflared, findCloudflared, startQuickTunnel } from "./tunnel.js";
 
 const sourceDir = path.dirname(fileURLToPath(import.meta.url));
 const bridgeRoot = path.resolve(sourceDir, "..");
@@ -87,29 +88,143 @@ Examples:
   agentbridge install-claude-skill --user`;
 }
 
-async function bridgeIsReady(origin) {
+async function bridgeHealth(origin) {
   try {
     const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(700) });
     const body = response.ok ? await response.json() : null;
-    return body?.ok === true;
+    return body?.ok === true ? body : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-async function ensureBridge(origin, autoStart) {
-  if (await bridgeIsReady(origin)) return;
-  if (!autoStart) throw new Error(`Bridge is not running at ${origin}`);
+async function bridgeIsReady(origin) {
+  return (await bridgeHealth(origin)) !== null;
+}
+
+/** Whether a host:port is only reachable from the same network. */
+export function isPrivateHost(hostname) {
+  const host = String(hostname ?? "").replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host) return true;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local")) return true;
+  if (/^10\./.test(host)) return true;
+  if (/^192\.168\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+  // Tailscale and ZeroTier hand out addresses from these ranges, which are
+  // reachable from the phone only when it is on the same overlay.
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) return true;
+  return false;
+}
+
+export function describeOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    return isPrivateHost(url.hostname) ? "private" : "public";
+  } catch {
+    return "private";
+  }
+}
+
+/**
+ * Where the tunnel state and the access key live.
+ *
+ * Deliberately the same directory the DSH plugin uses: if that plugin already
+ * brought a tunnel up to the same port, the CLI reuses it instead of opening a
+ * second one, and both sides read the same access key.
+ */
+function bridgeDataDir() {
+  return path.resolve(process.env.AGENTBRIDGE_DATA_DIR ?? path.join(os.homedir(), ".agentbridge"));
+}
+
+/**
+ * The public address the QR code should carry, if this run is going to have one.
+ *
+ * Returns null when the machine should stay on the LAN: the user opted out, the
+ * bridge is already running under someone else's address, or no tunnel could be
+ * brought up. Every one of those is a normal outcome — same-Wi-Fi pairing still
+ * works — so the reason is printed instead of thrown.
+ */
+export async function resolvePublicOrigin({ health, log = () => {}, env = process.env, dataDir = bridgeDataDir(), timeoutMs = 40_000 } = {}) {
+  const explicit = String(env.AGENTBRIDGE_PUBLIC_ORIGIN ?? "").trim().replace(/\/$/, "");
+  if (explicit) return { origin: explicit, accessKey: null, how: "AGENTBRIDGE_PUBLIC_ORIGIN" };
+
+  const supplied = String(env.AGENTBRIDGE_TUNNEL_URL ?? "").trim().replace(/\/$/, "");
+  if (supplied) return { origin: supplied, accessKey: ensureAccessKey(dataDir), how: "AGENTBRIDGE_TUNNEL_URL" };
+
+  if (env.AGENTBRIDGE_NO_TUNNEL === "1") {
+    log("AGENTBRIDGE_NO_TUNNEL=1: the QR code will only work on this Wi-Fi");
+    return null;
+  }
+  // An already-running bridge owns its address; asking it to move would mean
+  // restarting a service the user may be using right now.
+  if (health) {
+    const advertised = String(health.advertisedOrigin ?? "");
+    if (describeOrigin(advertised) === "public") return { origin: advertised, accessKey: null, how: "already running" };
+    log(`AgentBridge 已经在以局域网地址运行（${advertised || "unknown"}），本次二维码沿用这个地址。想换公网地址：先停掉它再重跑。`);
+    return null;
+  }
+
+  let command = findCloudflared({ env, home: os.homedir() });
+  if (!command) {
+    log("没有找到 cloudflared，正在从 Cloudflare 官方 Releases 下载（只下这一次）…");
+    command = await ensureCloudflared({ dataDir, env, log });
+  }
+  if (!command) {
+    log("仍然没有 cloudflared，二维码只能用在这台电脑所在 Wi-Fi 里。");
+    return null;
+  }
+
+  const port = new URL(`http://127.0.0.1:${env.AGENTBRIDGE_PORT ?? "8787"}`).port;
+  try {
+    const tunnel = await startQuickTunnel({
+      command,
+      origin: `http://127.0.0.1:${port}`,
+      dataDir,
+      log,
+      timeoutMs,
+    });
+    return { origin: tunnel.url, accessKey: ensureAccessKey(dataDir), how: tunnel.reused ? "cloudflare（复用已有隧道）" : "cloudflare" };
+  } catch (error) {
+    log(`Cloudflare 隧道没起来，二维码只能用在这台电脑所在 Wi-Fi 里：${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+async function startBridge(origin, env = {}) {
   const child = spawn(process.execPath, [path.join(bridgeRoot, "src", "server.js")], {
     cwd: bridgeRoot,
     detached: true,
     stdio: "ignore",
     windowsHide: true,
+    env: { ...process.env, ...env },
   });
   child.unref();
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    if (await bridgeIsReady(origin)) return;
+    if (await bridgeIsReady(origin)) return true;
+  }
+  return false;
+}
+
+async function ensureBridge(origin, autoStart, log = () => {}) {
+  const health = await bridgeHealth(origin);
+  if (health) return health;
+  if (!autoStart) throw new Error(`Bridge is not running at ${origin}`);
+
+  // The tunnel has to exist before the bridge starts, because the address is
+  // baked into the pairing URL at startup — the exact opposite of the DSH
+  // plugin, which keeps a local bridge up and restarts it once a tunnel exists.
+  const remote = await resolvePublicOrigin({ log });
+  const env = remote?.accessKey
+    ? { AGENTBRIDGE_PUBLIC_ORIGIN: remote.origin, AGENTBRIDGE_ACCESS_KEY: remote.accessKey }
+    : {};
+  if (await startBridge(origin, env)) {
+    if (remote) log(`公网地址就绪：${remote.origin}（${remote.how}）`);
+    return bridgeHealth(origin);
+  }
+  if (Object.keys(env).length) {
+    log("带公网地址的桥没起来，退回只用这台电脑所在 Wi-Fi。");
+    if (await startBridge(origin)) return bridgeHealth(origin);
   }
   throw new Error(`Could not start Bridge at ${origin}`);
 }
@@ -117,7 +232,8 @@ async function ensureBridge(origin, autoStart) {
 async function requestPhone(options) {
   const port = process.env.AGENTBRIDGE_PORT ?? "8787";
   const origin = (process.env.AGENTBRIDGE_LOCAL_ORIGIN ?? `http://127.0.0.1:${port}`).replace(/\/$/, "");
-  await ensureBridge(origin, !options["no-start"]);
+  const log = (message) => console.error(`[agentbridge] ${message}`);
+  const health = await ensureBridge(origin, !options["no-start"], log);
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const adapterId = options.agent ?? "claude";
   const response = await fetch(`${origin}/api/local/phone`, {
@@ -139,10 +255,14 @@ async function requestPhone(options) {
     return result;
   }
   const qr = await QRCode.toString(result.pairing.url, { type: "terminal", small: true, errorCorrectionLevel: "M" });
+  const network = describeOrigin(result.pairing.url) === "public"
+    ? "公网地址，手机用流量也能打开"
+    : "局域网地址，手机需与电脑连同一个 Wi-Fi";
   console.log(`\nAgentBridge 已绑定当前对话`);
   console.log(`Agent: ${adapterId}`);
   console.log(`项目: ${cwd}`);
   console.log(`会话: ${result.session.providerSessionId ?? result.session.id}`);
+  console.log(`网络: ${network}`);
   console.log(`有效期: ${new Date(result.pairing.expiresAt).toLocaleTimeString()}（一次性）\n`);
   console.log(qr);
   if (result.qrImageUrl) {
