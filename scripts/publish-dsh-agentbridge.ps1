@@ -111,7 +111,15 @@ Write-Host "  [ok] version $pkgVersion is not published yet" -ForegroundColor Gr
 
 Write-Host ""
 Write-Host "== 4/6 Pack contents" -ForegroundColor Cyan
-$packOut = (& npm pack --dry-run --registry $Registry 2>&1 | Out-String)
+# Run inside the plugin directory: `npm pack` at the repository root packs the
+# bridge package, whose tarball has no cordis.patch.yml and would fail this check
+# for the wrong reason.
+Push-Location $pluginDir
+try {
+    $packOut = (& npm pack --dry-run --registry $Registry 2>&1 | Out-String)
+} finally {
+    Pop-Location
+}
 if ($packOut -notmatch 'cordis\.patch\.yml') {
     Write-Host "[x] cordis.patch.yml is not in the tarball; the marketplace would reject the plugin as non-standard" -ForegroundColor Red
     exit 1
