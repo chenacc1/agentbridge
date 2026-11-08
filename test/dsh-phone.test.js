@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { PhoneConnections, apply, interactionRecord } from "../integrations/dsh-phone/lib/index.js";
 
 test("/phone reads the live DSH model directory even when agent.options omits provider and model", async (t) => {
@@ -766,4 +769,62 @@ test("/phone keeps the raw error when the bridge is up but rejects the request",
   // not be shown — the message has to carry what the bridge actually said.
   assert.doesNotMatch(result.text, /npx @chenacc\/agentbridge/);
   assert.match(result.text, /Invalid DSH Desktop pairing|无法连接 AgentBridge/);
+});
+
+test("the plugin starts a local bridge when it loads and none is running", async (t) => {
+  const realFetch = globalThis.fetch;
+  const saved = {
+    origin: process.env.AGENTBRIDGE_ORIGIN,
+    entry: process.env.AGENTBRIDGE_BRIDGE_ENTRY,
+    noAutostart: process.env.AGENTBRIDGE_NO_AUTOSTART,
+  };
+  delete process.env.AGENTBRIDGE_NO_AUTOSTART;
+
+  // A stand-in bridge: real HTTP on a real port, answering the one endpoint the
+  // autostart path needs, and exiting on its own so the run leaves nothing bound.
+  const port = 19100 + Math.floor(Math.random() * 80);
+  const dir = await mkdtemp(path.join(tmpdir(), "bridge-autostart-"));
+  const stub = path.join(dir, "server.mjs");
+  await writeFile(stub, `
+import { createServer } from "node:http";
+const port = Number(process.env.AGENTBRIDGE_PORT);
+createServer((req, res) => {
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify(req.url === "/api/health" ? { ok: true } : { accepted: true }));
+}).listen(port, "127.0.0.1");
+setTimeout(() => process.exit(0), 20_000).unref();
+`, "utf8");
+
+  process.env.AGENTBRIDGE_ORIGIN = `http://127.0.0.1:${port}`;
+  process.env.AGENTBRIDGE_BRIDGE_ENTRY = stub;
+  t.after(async () => {
+    if (saved.origin === undefined) delete process.env.AGENTBRIDGE_ORIGIN;
+    else process.env.AGENTBRIDGE_ORIGIN = saved.origin;
+    if (saved.entry === undefined) delete process.env.AGENTBRIDGE_BRIDGE_ENTRY;
+    else process.env.AGENTBRIDGE_BRIDGE_ENTRY = saved.entry;
+    if (saved.noAutostart !== undefined) process.env.AGENTBRIDGE_NO_AUTOSTART = saved.noAutostart;
+    globalThis.fetch = realFetch;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // Loading the plugin is the whole trigger: no /phone, no user action.
+  apply({
+    on() {},
+    commands: { register() {} },
+    apiProxy: { sessions: { async models() { throw new Error("unused"); } } },
+    logger: { warn() {} },
+  });
+
+  let ready = false;
+  for (let attempt = 0; attempt < 60 && !ready; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    try {
+      const response = await realFetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(300) });
+      ready = response.ok && (await response.json()).ok === true;
+    } catch {
+      // Not listening yet.
+    }
+  }
+
+  assert.ok(ready, `expected the plugin to bring a bridge up on port ${port}`);
 });

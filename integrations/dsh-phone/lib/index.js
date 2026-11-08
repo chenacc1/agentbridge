@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const name = "agentbridge-dsh-phone";
 // `agents` is not optional: creating a conversation from the phone asks the agent
@@ -72,6 +76,105 @@ function bridgeSetupText(origin) {
     "",
     `桥启动后再敲一次 /phone。桥不在默认端口的话，先设置环境变量 AGENTBRIDGE_ORIGIN，再重启 DSH Desktop。`,
   ].join("\n");
+}
+
+const BRIDGE_PACKAGE = "@chenacc/agentbridge";
+// Long enough for a detached server to bind its port on a slow disk, short
+// enough that /phone still reads as a command rather than a hang.
+const AUTOSTART_TIMEOUT_MS = 8_000;
+
+/**
+ * Where the bridge's server entry lives on this machine, if it is installed.
+ *
+ * The plugin ships `@chenacc/agentbridge` as a dependency, so the normal answer
+ * comes from module resolution next to this file. `AGENTBRIDGE_BRIDGE_ENTRY`
+ * exists for tests and for unusual installs.
+ *
+ * The resolved manifest must live under a `node_modules` directory: without that
+ * check, Node's package self-reference resolves this repository's own root
+ * package as `@chenacc/agentbridge`, so a development checkout would start a
+ * second bridge from the source tree and steal port 8787 from the developer.
+ */
+function bridgeServerEntry() {
+  if (process.env.AGENTBRIDGE_BRIDGE_ENTRY) return process.env.AGENTBRIDGE_BRIDGE_ENTRY;
+  try {
+    const resolved = fileURLToPath(import.meta.resolve(`${BRIDGE_PACKAGE}/package.json`));
+    if (!resolved.split(path.sep).includes("node_modules")) return null;
+    return path.join(path.dirname(resolved), "src", "server.js");
+  } catch {
+    return null;
+  }
+}
+
+async function bridgeIsReady(origin) {
+  try {
+    const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(700) });
+    if (!response.ok) return false;
+    const body = await response.json().catch(() => null);
+    return body?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether this process may start a bridge at all.
+ *
+ * A unit test must never spawn a server: node:test sets NODE_TEST_CONTEXT, and a
+ * bridge started there would bind a real port and outlive the run. An explicit
+ * AGENTBRIDGE_BRIDGE_ENTRY is the single way to opt back in, which is what the
+ * autostart test relies on.
+ */
+function autoStartAllowed() {
+  if (process.env.AGENTBRIDGE_NO_AUTOSTART === "1") return false;
+  if (process.env.AGENTBRIDGE_BRIDGE_ENTRY) return true;
+  return process.env.NODE_TEST_CONTEXT === undefined;
+}
+
+/**
+ * Start the local bridge and wait until it answers.
+ *
+ * Returns true only once the health check passes, so the caller retries the real
+ * registration instead of trusting that a spawn means a working server. Every
+ * failure path is silent: the caller falls back to the manual setup text.
+ */
+async function startBridge(origin) {
+  if (await bridgeIsReady(origin)) return true;
+  if (!autoStartAllowed()) return false;
+  const entry = bridgeServerEntry();
+  if (!entry || !existsSync(entry)) return false;
+
+  let port;
+  try {
+    port = new URL(origin).port || "8787";
+  } catch {
+    return false;
+  }
+
+  try {
+    // Loaded lazily: the plugin normally runs with a bridge already up, so the
+    // child-process machinery is dead weight on the common path.
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, [entry], {
+      // State belongs next to the user's DSH data, not in whatever directory the
+      // desktop happened to launch from.
+      cwd: process.env.DSH_HOME || homedir(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: { ...process.env, AGENTBRIDGE_PORT: process.env.AGENTBRIDGE_PORT || port },
+    });
+    child.unref();
+  } catch {
+    return false;
+  }
+
+  const deadline = Date.now() + AUTOSTART_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (await bridgeIsReady(origin)) return true;
+  }
+  return false;
 }
 
 function clipped(value, limit) {
@@ -856,6 +959,12 @@ function apply(ctx) {
       }
     },
   });
+
+  // Bring the bridge up in the background as soon as the plugin loads, so by the
+  // time the user types /phone the local service is already there. Deliberately
+  // not awaited: a slow spawn must never delay desktop startup, and every failure
+  // is silent — /phone still prints the manual steps when nothing came up.
+  void startBridge(String(process.env.AGENTBRIDGE_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, "")).catch(() => {});
 }
 
 export { apply, inject, name };

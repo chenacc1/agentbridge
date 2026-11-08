@@ -2,20 +2,20 @@
 
 目标：让 `@chenacc/dsh-agentbridge` 出现在 DSH Desktop「设置 → 插件市场 → 发现」里，并且可以点一下安装。
 
-## 下一步 B：插件自动拉起桥（未完成，记录卡点）
+## B 已实现：插件加载时自动拉起桥（0.2.0）
 
-目标：`/phone` 发现桥没起时自己 spawn 一个，用户连 `npx` 都不用敲。
+目标达成形态：用户从市场装完、重启 DSH Desktop，桥就已经在跑，`/phone` 直接出二维码，中间不需要终端。
 
-已经实现并自测通过的部分（后来整体撤回，避免半成品留在主干）：
+实现方式（比原计划更省事）：
 
-- 插件 `dependencies` 加 `@chenacc/agentbridge`，用 `import.meta.resolve` 找到 `node_modules/@chenacc/agentbridge/src/server.js`；
-- 解析结果必须落在 `node_modules` 里才允许 spawn——否则 Node 的 **包自引用** 会把本仓库根包解析成 `@chenacc/agentbridge`，开发机上就会多起一个桥、抢走 8787；
-- `/phone` 失败且判定为"桥不在"时，`GET /api/health` 轮询最多 8s，再重试一次 `connect()`；
-- 用真实 HTTP 桩服务验证过：spawn 后重连能拿到配对信息。
+- 插件把 `@chenacc/agentbridge` 声明成依赖，用 `import.meta.resolve` 定位 `node_modules/@chenacc/agentbridge/src/server.js`；
+- **在 `apply()` 末尾**用 `void startBridge(...).catch(() => {})` 后台启动，**不改 `/phone` 的 handler**——上一版把重试塞进 handler，导致 `node --test` 跑完不退出（根因没定位，改设计后消失）；
+- 解析结果必须落在 `node_modules` 里才允许 spawn：否则 Node 的**包自引用**会把本仓库根包解析成 `@chenacc/agentbridge`，开发机上会多起一个桥、抢走 8787；
+- 端口取自 `AGENTBRIDGE_ORIGIN`（缺省 8787），子进程 `cwd` 放在 `DSH_HOME` 或用户主目录，避免状态落进桌面进程的启动目录；
+- `NODE_TEST_CONTEXT` 下默认禁止 spawn（否则单元测试会真的起服务），只有显式 `AGENTBRIDGE_BRIDGE_ENTRY` 才放行——自动启动的测试就是这么验的；
+- 起不来就静默失败，`/phone` 仍然打印手动步骤（`npx @chenacc/agentbridge`）。
 
-撤回原因：合入后 `node --test test/dsh-phone.test.js` 跑完用例不退出（旧测试、新测试都触发；把自动启动全局关掉也一样）。已排除：detached spawn 自身持住进程、自引用误判、`AbortSignal.timeout` 计时器。未定位到根因前不把它推上主线。
-
-下次继续时的建议：把自动启动放进**不 await 的后台任务**（`/phone` 立刻返回"正在尝试启动"），把 spawn 收敛到一个可注入的 seam，单元测试只测决策逻辑、真实 spawn 放到一次性集成脚本里跑。
+验证：`npm test` 204 项全过；`the plugin starts a local bridge when it loads and none is running` 用一个真实 HTTP 桩服务验到"加载即起桥"。
 
 ## 两个 npm 包，两条命令
 

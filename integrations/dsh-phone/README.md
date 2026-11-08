@@ -7,7 +7,11 @@ AgentBridge 的 DSH Desktop 集成插件。在某个项目会话里执行 `/phon
 
 ## 前置条件（重要）
 
-这个插件**只是一个桥接层**，它自己不是服务端。它需要本机运行 AgentBridge 主程序（默认 `http://127.0.0.1:8787`）。一条命令起桥：
+这个插件**只是一个桥接层**，真正的服务端是本机运行的 AgentBridge 桥（默认 `http://127.0.0.1:8787`）。
+
+从 0.2.0 起，桥作为依赖随插件一起安装，**DSH Desktop 启动时插件会自己在后台把桥拉起来**，所以正常情况下你什么都不用敲，重启桌面后直接 `/phone` 就行。
+
+只有自动启动失败时（沙箱限制、端口被占、装在非常规位置）才需要手动起桥：
 
 ```powershell
 npx @chenacc/agentbridge
@@ -22,7 +26,7 @@ agentbridge phone --agent claude
 
 也可以从仓库跑：`git clone` → `npm install` → `npm start`。
 
-没有这一步，`/phone` 会把"怎么把桥跑起来"的步骤直接印在会话里，插件不会自己下载或启动任何服务。
+桥起不来时 `/phone` 会把上面这些命令直接印在会话里，不会让你对着一个报错发呆。
 
 要求：DSH Desktop 已安装（存在 `%USERPROFILE%\.dsh\profiles\desktop\package.json`），Node.js 22+。
 

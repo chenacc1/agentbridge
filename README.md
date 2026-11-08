@@ -175,7 +175,9 @@ node .\bin\agentbridge.js phone --agent codex --session <thread-id>
 
 前提：DSH Desktop 已安装，且存在桌面 profile `%USERPROFILE%\.dsh\profiles\desktop\package.json`（或由 `DSH_HOME` 指定）。
 
-**第 0 步：先把桥跑起来。** 插件是遥控器，桥是基站；没有桥，`/phone` 只会告诉你"无法连接 AgentBridge"。最省事是一条命令（自动起桥并直接打印二维码）：
+**第 0 步：桥。** 插件是遥控器，桥是基站。从 0.2.0 起桥随插件一起安装，**DSH Desktop 启动时插件会自己在后台把它拉起来**，正常情况你什么都不用敲。
+
+只有自动启动失败（沙箱限制、端口被占）才需要手动来一条：
 
 ```powershell
 npx @chenacc/agentbridge
