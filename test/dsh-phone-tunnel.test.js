@@ -5,8 +5,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  cloudflaredAssetUrl,
+  cloudflaredBinaryPath,
   cloudflaredCandidates,
   ensureAccessKey,
+  ensureCloudflared,
   extractTunnelUrl,
   findCloudflared,
   readTunnelState,
@@ -184,4 +187,138 @@ test("the candidate list covers PATH, both Program Files, winget and the portabl
   assert.ok(candidates.some((entry) => entry.startsWith("C:\\PF86\\cloudflared")));
   assert.ok(candidates.some((entry) => entry.includes("WinGet")));
   assert.ok(candidates.some((entry) => entry.includes(path.join(".agentbridge", "bin"))));
+});
+
+test("the official build is downloaded on first need and reused afterwards", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bridge-download-"));
+  const downloads = [];
+  const download = async (url, target) => {
+    downloads.push({ url, target });
+    await writeFile(target, "MZ fake cloudflared", "utf8");
+  };
+  try {
+    const first = await ensureCloudflared({
+      dataDir: dir,
+      env: {},
+      platform: "win32",
+      arch: "x64",
+      download,
+      verify: async () => "2026.10.7",
+      log: () => {},
+    });
+    assert.equal(first, cloudflaredBinaryPath(dir, { platform: "win32" }));
+    assert.equal(downloads.length, 1);
+    assert.match(downloads[0].url, /^https:\/\/github\.com\/cloudflare\/cloudflared\/releases\/latest\/download\//);
+    const record = JSON.parse(await readFile(path.join(dir, "bin", "cloudflared.json"), "utf8"));
+    assert.equal(record.version, "2026.10.7");
+
+    // Second launch: the file is already there, and it runs, so nothing is fetched.
+    const second = await ensureCloudflared({
+      dataDir: dir,
+      env: {},
+      platform: "win32",
+      arch: "x64",
+      download,
+      verify: async () => "2026.10.7",
+      log: () => {},
+    });
+    assert.equal(second, first);
+    assert.equal(downloads.length, 1, "a working copy must not be re-downloaded");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a corrupt download is never promoted to cloudflared.exe", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bridge-download-bad-"));
+  try {
+    const result = await ensureCloudflared({
+      dataDir: dir,
+      env: {},
+      platform: "win32",
+      arch: "x64",
+      download: async (url, target) => { await writeFile(target, "<html>captive portal</html>", "utf8"); },
+      verify: async () => null,
+      log: () => {},
+    });
+    assert.equal(result, null);
+    assert.equal(await readFile(cloudflaredBinaryPath(dir, { platform: "win32" }), "utf8").then(() => "present", () => "absent"), "absent");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a download failure falls back to same-Wi-Fi instead of throwing", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bridge-download-fail-"));
+  const messages = [];
+  try {
+    const result = await ensureCloudflared({
+      dataDir: dir,
+      env: {},
+      platform: "win32",
+      arch: "x64",
+      download: async () => { throw new Error("HTTP 502 downloading"); },
+      verify: async () => "2026.10.7",
+      log: (message) => messages.push(message),
+    });
+    assert.equal(result, null);
+    assert.ok(messages.some((message) => message.includes("HTTP 502")), messages.join(" | "));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("downloading is skipped when the user says no, or points at their own copy", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bridge-download-off-"));
+  let downloads = 0;
+  const download = async () => { downloads += 1; };
+  try {
+    const optedOut = await ensureCloudflared({
+      dataDir: dir,
+      env: { AGENTBRIDGE_NO_DOWNLOAD: "1" },
+      platform: "win32",
+      arch: "x64",
+      download,
+      verify: async () => "2026.10.7",
+      log: () => {},
+    });
+    assert.equal(optedOut, null);
+    assert.equal(downloads, 0);
+
+    const own = await ensureCloudflared({
+      dataDir: dir,
+      env: { AGENTBRIDGE_CLOUDFLARED: "D:\\tools\\cloudflared.exe" },
+      platform: "win32",
+      arch: "x64",
+      exists: (candidate) => candidate === "D:\\tools\\cloudflared.exe",
+      download,
+      verify: async () => "2026.10.7",
+      log: () => {},
+    });
+    assert.equal(own, "D:\\tools\\cloudflared.exe");
+    assert.equal(downloads, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unsupported platform asks the user instead of downloading nonsense", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bridge-download-arch-"));
+  const messages = [];
+  try {
+    assert.equal(cloudflaredAssetUrl({ platform: "linux", arch: "x64" }), null);
+    const result = await ensureCloudflared({
+      dataDir: dir,
+      env: {},
+      platform: "linux",
+      arch: "x64",
+      download: async () => { throw new Error("should not download"); },
+      verify: async () => "2026.10.7",
+      log: (message) => messages.push(message),
+    });
+    assert.equal(result, null);
+    assert.ok(messages.some((message) => message.includes("linux/x64")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -11,13 +11,17 @@ AgentBridge 的 DSH Desktop 集成插件。在某个项目会话里执行 `/phon
 
 从 0.2.0 起，桥作为依赖随插件一起安装，**DSH Desktop 启动时插件会自己在后台把桥拉起来**，所以正常情况下你什么都不用敲，重启桌面后直接 `/phone` 就行。
 
-从 0.3.0 起，插件默认还会**自动开一条 Cloudflare 隧道**，把桥映射成一个公网 https 地址——手机用流量、在外地都能扫码打开，不必和电脑连同一个 Wi-Fi。这一步需要一个叫 `cloudflared` 的小工具（Cloudflare 官方客户端）：
+从 0.3.0 起，插件默认还会**自动开一条 Cloudflare 隧道**，把桥映射成一个公网 https 地址——手机用流量、在外地都能扫码打开，不必和电脑连同一个 Wi-Fi。
+
+这一步需要一个叫 `cloudflared` 的小工具（Cloudflare 官方客户端）。**你不用管它**：插件会先在本机找，找不到就自己从 Cloudflare 官方的 GitHub Releases 下载一份到 `~\.agentbridge\bin\cloudflared.exe`（约 55 MB，只下一次，不用管理员权限，删掉那个文件夹就等于卸载）。下载完还会跑一次 `cloudflared --version` 验证，验不过的文件不会留在磁盘上。
+
+想自己装也行，插件优先用系统里已有的那份：
 
 ```powershell
 winget install --id Cloudflare.cloudflared
 ```
 
-装好重启 DSH Desktop 即可，插件会自己找到它。没装也能用，只是退回到"手机和电脑同一个 Wi-Fi"。
+下载不到（断网、公司代理拦着）也能用，只是退回到"手机和电脑同一个 Wi-Fi"，日志里会说明原因。
 
 只有自动启动失败时（沙箱限制、端口被占、装在非常规位置）才需要手动起桥：
 
@@ -79,7 +83,9 @@ pnpm add @chenacc/dsh-agentbridge@latest
 | `AGENTBRIDGE_NO_TUNNEL` | 未设置 | 设为 `1` 只用局域网，不起 Cloudflare 隧道（比如你只在家里用） |
 | `AGENTBRIDGE_PUBLIC_ORIGIN` | 未设置 | 自己指定对外的地址（命名隧道、Tailscale、ZeroTier）；设了它插件就不起隧道 |
 | `AGENTBRIDGE_TUNNEL_URL` | 未设置 | 直接指定一个隧道域名；主要给测试和"隧道自己管"的人用 |
-| `AGENTBRIDGE_CLOUDFLARED` | 自动查找 | `cloudflared` 不在 PATH 和常规目录时，指定它的绝对路径 |
+| `AGENTBRIDGE_CLOUDFLARED` | 自动查找 | 用你自己那份 `cloudflared`；设了它插件既不搜索也不下载 |
+| `AGENTBRIDGE_NO_DOWNLOAD` | 未设置 | 设为 `1` 禁止插件自动下载 `cloudflared`（会退回局域网） |
+| `AGENTBRIDGE_CLOUDFLARED_URL` | 官方 GitHub Releases | 换一个下载源（内网镜像之类）；下载后照样要过 `--version` 校验 |
 
 变量要设在**真正启动 DSH Desktop 的环境里**（插件读 `process.env`），不是设在跑 bridge 的终端里。
 
@@ -99,7 +105,7 @@ pnpm remove @chenacc/dsh-agentbridge
 | 版本 | 需要 |
 |---|---|
 | 插件 0.1.x | DSH Desktop（`@deepseek-ai/dsh-commands`、`@deepseek-ai/cordis` 由 DSH 提供）、AgentBridge `0.1.x` |
-| 插件 0.3.x | 同上 + 可选 `cloudflared`（跨网络用） |
+| 插件 0.3.x | 同上 + `cloudflared`（跨网络用；缺了会自动下载） |
 
 插件与 bridge 之间有一份集成版本号握手：bridge 侧要求的最低集成版本比插件旧时，手机端会提示"桌面端集成是旧版"，升级插件即可。
 

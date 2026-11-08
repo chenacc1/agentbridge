@@ -178,13 +178,9 @@ node .\bin\agentbridge.js phone --agent codex --session <thread-id>
 
 **第 0 步：桥。** 插件是遥控器，桥是基站。从 0.2.0 起桥随插件一起安装，**DSH Desktop 启动时插件会自己在后台把它拉起来**，正常情况你什么都不用敲。
 
-从 0.3.0 起，插件默认再开一条 **Cloudflare 隧道**，把桥映射成公网 https 域名，于是手机不必和电脑在同一个 Wi-Fi——扫描、出差、用流量都能开。这一步需要一个 Cloudflare 官方小工具：
+从 0.3.0 起，插件默认再开一条 **Cloudflare 隧道**，把桥映射成公网 https 域名，于是手机不必和电脑在同一个 Wi-Fi——扫码、出差、用流量都能开。隧道要用的 `cloudflared`（Cloudflare 官方客户端）同样是自动的：先找本机已有的那份，找不到就自己从官方 GitHub Releases 下到 `~/.agentbridge/bin`（约 55 MB，只下一次，不要管理员权限，下载后跑一次 `cloudflared --version` 验证才留下）。
 
-```powershell
-winget install --id Cloudflare.cloudflared
-```
-
-没装也不影响使用，只是退回"手机与电脑同一 Wi-Fi"。想一直走局域网，设 `AGENTBRIDGE_NO_TUNNEL=1`；想用固定域名，去 Cloudflare 建命名隧道并把 `AGENTBRIDGE_PUBLIC_ORIGIN` 指向它。
+想自己装也行：`winget install --id Cloudflare.cloudflared`。下不动（断网、公司代理）照样能用，只是退回"手机与电脑同一 Wi-Fi"。想一直走局域网，设 `AGENTBRIDGE_NO_TUNNEL=1`；想用固定域名，去 Cloudflare 建命名隧道并把 `AGENTBRIDGE_PUBLIC_ORIGIN` 指向它。
 
 只有自动启动失败（沙箱限制、端口被占）才需要手动来一条：
 

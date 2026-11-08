@@ -16,9 +16,11 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import tls from "node:tls";
 
 /**
  * A quick tunnel hostname.
@@ -68,6 +70,191 @@ export function findCloudflared({ env = process.env, home = os.homedir(), exists
     }
   }
   return null;
+}
+
+/** The official release asset for this machine, or null when there is none. */
+export function cloudflaredAssetUrl({ platform = process.platform, arch = process.arch } = {}) {
+  if (platform === "win32" && arch === "x64") {
+    return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
+  }
+  if (platform === "win32" && arch === "arm64") {
+    return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-arm64.exe";
+  }
+  return null;
+}
+
+export function cloudflaredBinaryPath(dataDir, { platform = process.platform } = {}) {
+  return path.join(dataDir, "bin", platform === "win32" ? "cloudflared.exe" : "cloudflared");
+}
+
+function cloudflaredVersionPath(dataDir) {
+  return path.join(dataDir, "bin", "cloudflared.json");
+}
+
+/**
+ * Proves a downloaded file is the real cloudflared before anything runs through it.
+ *
+ * `--version` is the honest test: it exercises the binary the tunnel is about to
+ * use, and the banner ("cloudflared version 2026.10.7 ...") is a shape no HTML
+ * error page or truncated download can produce.
+ */
+export async function cloudflaredVersion(command, { spawnImpl = spawn, timeoutMs = 20_000 } = {}) {
+  return new Promise((resolve) => {
+    let output = "";
+    let child;
+    try {
+      child = spawnImpl(command, ["--version"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      return resolve(null);
+    }
+    const done = (value) => {
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      done(null);
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout?.on("data", (chunk) => { output += String(chunk); });
+    child.stderr?.on("data", (chunk) => { output += String(chunk); });
+    child.once?.("error", () => done(null));
+    child.once?.("exit", () => {
+      const match = /cloudflared version v?(\d+\.\d+\.\d+\S*)/i.exec(output);
+      done(match ? match[1] : null);
+    });
+  });
+}
+
+/**
+ * Fetch the official binary to `<dataDir>` and hand back its path.
+ *
+ * Two details make this work where a naive `fetch` would not: GitHub redirects to
+ * a versioned asset host, and on machines behind a TLS-inspecting proxy (common in
+ * corporate networks and in China) the OS trust store is the only thing that
+ * verifies the certificate — so the request carries the system roots alongside
+ * Node's bundled ones.
+ */
+function downloadToFile(url, target, { log = () => {}, maxRedirects = 5, timeoutMs = 120_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const ca = (() => {
+      try {
+        const system = typeof tls.getCACertificates === "function" ? tls.getCACertificates("system") : [];
+        return [...tls.rootCertificates, ...system];
+      } catch {
+        return undefined;
+      }
+    })();
+
+    const get = (current, redirectsLeft) => {
+      const request = https.get(current, {
+        ...(ca ? { ca } : {}),
+        headers: { "user-agent": "agentbridge-dsh-phone", accept: "application/octet-stream" },
+        timeout: timeoutMs,
+      }, (response) => {
+        const status = response.statusCode ?? 0;
+        if (status >= 300 && status < 400 && response.headers.location) {
+          response.resume();
+          if (redirectsLeft <= 0) return reject(new Error("too many redirects"));
+          return get(new URL(response.headers.location, current).href, redirectsLeft - 1);
+        }
+        if (status !== 200) {
+          response.resume();
+          return reject(new Error(`HTTP ${status} downloading ${current}`));
+        }
+        const expected = Number(response.headers["content-length"] ?? 0);
+        if (expected) log(`downloading ${(expected / 1024 / 1024).toFixed(1)} MB from Cloudflare`);
+        const file = createWriteStream(target);
+        let written = 0;
+        let nextReport = 10 * 1024 * 1024;
+        response.on("data", (chunk) => {
+          written += chunk.length;
+          // A 55 MB download on a slow link otherwise looks like a hang.
+          if (written >= nextReport) {
+            nextReport += 10 * 1024 * 1024;
+            log(`cloudflared download: ${(written / 1024 / 1024).toFixed(0)} MB${expected ? ` of ${(expected / 1024 / 1024).toFixed(0)}` : ""}`);
+          }
+        });
+        response.pipe(file);
+        file.on("finish", () => file.close(() => {
+          // A truncated download that still "finished" is the failure mode that
+          // would otherwise land a corrupt exe on disk.
+          if (expected && written !== expected) return reject(new Error(`truncated download: ${written} of ${expected} bytes`));
+          resolve(written);
+        }));
+        file.on("error", reject);
+        response.on("error", reject);
+      });
+      request.on("timeout", () => request.destroy(new Error("download timed out")));
+      request.on("error", reject);
+    };
+
+    get(url, maxRedirects);
+  });
+}
+
+/**
+ * The cloudflared this machine should use, downloaded on first need.
+ *
+ * A missing cloudflared used to mean "same Wi-Fi only", which made the plugin's
+ * remote mode an opt-in nobody opted into. Downloading the official build into the
+ * bridge's own data directory keeps it out of Program Files, needs no elevation,
+ * and can be removed by deleting one folder.
+ */
+export async function ensureCloudflared({
+  dataDir,
+  env = process.env,
+  log = () => {},
+  platform = process.platform,
+  arch = process.arch,
+  exists = existsSync,
+  download = downloadToFile,
+  verify = cloudflaredVersion,
+  now = () => new Date().toISOString(),
+} = {}) {
+  const override = String(env.AGENTBRIDGE_CLOUDFLARED ?? "").trim();
+  if (override) {
+    return exists(override) ? override : null;
+  }
+
+  const target = cloudflaredBinaryPath(dataDir, { platform });
+
+  if (exists(target)) {
+    const version = await verify(target);
+    if (version) return target;
+    log(`the downloaded cloudflared at ${target} does not run; removing it and fetching a fresh copy`);
+    try { rmSync(target, { force: true }); } catch { /* a locked file just fails the download below */ }
+  }
+
+  const url = String(env.AGENTBRIDGE_CLOUDFLARED_URL ?? "").trim() || cloudflaredAssetUrl({ platform, arch });
+  if (!url) {
+    log(`no official cloudflared build for ${platform}/${arch}; install one yourself and point AGENTBRIDGE_CLOUDFLARED at it`);
+    return null;
+  }
+  if (env.AGENTBRIDGE_NO_DOWNLOAD === "1") {
+    log("cloudflared is not installed and AGENTBRIDGE_NO_DOWNLOAD=1 forbids downloading it");
+    return null;
+  }
+
+  const temporary = `${target}.download`;
+  try {
+    mkdirSync(path.dirname(target), { recursive: true });
+    await download(url, temporary, { log });
+    const version = await verify(temporary);
+    if (!version) throw new Error("the downloaded file does not report a cloudflared version");
+    renameSync(temporary, target);
+    try {
+      writeFileSync(cloudflaredVersionPath(dataDir), JSON.stringify({ version, url, downloadedAt: now() }, null, 2), "utf8");
+    } catch {
+      // The record is a convenience, not a requirement.
+    }
+    log(`cloudflared ${version} is ready at ${target}`);
+    return target;
+  } catch (error) {
+    try { rmSync(temporary, { force: true }); } catch { /* nothing to clean */ }
+    log(`could not fetch cloudflared from ${url}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 
 export function accessKeyPath(dataDir) {

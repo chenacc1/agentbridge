@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureAccessKey, ensureAutostartToken, findCloudflared, readAutostartToken, startQuickTunnel } from "./tunnel.js";
+import { ensureAccessKey, ensureAutostartToken, ensureCloudflared, findCloudflared, readAutostartToken, startQuickTunnel } from "./tunnel.js";
 
 const name = "agentbridge-dsh-phone";
 // `agents` is not optional: creating a conversation from the phone asks the agent
@@ -280,6 +280,31 @@ function bridgeDataDir() {
 }
 
 /**
+ * The cloudflared to run, fetching the official build the first time.
+ *
+ * Remote mode is supposed to be the default, and "the default" cannot depend on
+ * the user having heard of cloudflared. So the machine is searched first (a real
+ * install wins, whoever put it there), and only when nothing is found does the
+ * plugin download Cloudflare's own binary into its data directory — no elevation,
+ * nothing in Program Files, removable by deleting one folder.
+ */
+async function resolveCloudflared(log) {
+  const installed = findCloudflared({ env: process.env, home: homedir() });
+  if (installed) return installed;
+
+  log("cloudflared was not found; fetching the official build into the bridge's data directory (once)");
+  const downloaded = await ensureCloudflared({ dataDir: bridgeDataDir(), env: process.env, log });
+  if (!downloaded) {
+    log(
+      "still no cloudflared, so this machine stays on same-Wi-Fi pairing: "
+      + "install it with `winget install --id Cloudflare.cloudflared`, or download cloudflared-windows-amd64.exe "
+      + "from https://github.com/cloudflare/cloudflared/releases and point AGENTBRIDGE_CLOUDFLARED at it",
+    );
+  }
+  return downloaded;
+}
+
+/**
  * The address the QR code should carry, and the key that unlocks it.
  *
  * Returns null when the machine should stay on the LAN: no cloudflared, an
@@ -293,9 +318,9 @@ async function resolveRemoteOrigin(log) {
   const supplied = String(process.env.AGENTBRIDGE_TUNNEL_URL ?? "").trim().replace(/\/$/, "");
   if (supplied) return { origin: supplied, accessKey: ensureAccessKey(bridgeDataDir()), how: "AGENTBRIDGE_TUNNEL_URL" };
 
-  const command = findCloudflared({ env: process.env, home: homedir() });
+  const command = await resolveCloudflared(log);
   if (!command) {
-    log("no cloudflared found, staying on this Wi-Fi only: install it with `winget install --id Cloudflare.cloudflared`, then restart DSH Desktop");
+    log("no cloudflared is available, staying on this Wi-Fi only");
     return null;
   }
 
