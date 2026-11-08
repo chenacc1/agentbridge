@@ -50,3 +50,6 @@ scripts/verify-product-guide.mjs
 # local scratch probes / 
 ._*.mjs
 _poll.mjs
+
+# scratch: npm caches and exported CA bundles used during releases
+.tmp-*
