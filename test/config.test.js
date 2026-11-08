@@ -1,7 +1,44 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { loadConfig, isLoopback } from "../src/config.js";
+import { loadConfig, isLoopback, rankLanAddresses } from "../src/config.js";
+
+/** Windows adapters in the order that produced a dead QR code in 0.1.0. */
+function windowsAdapters() {
+  const v4 = (address, internal = false) => [{ family: "IPv4", address, internal, netmask: "255.255.255.0" }];
+  return {
+    "Loopback Pseudo-Interface 1": [{ family: "IPv4", address: "127.0.0.1", internal: true }],
+    Tailscale: v4("169.254.83.107"),
+    "vEthernet (Default Switch)": v4("172.29.16.1"),
+    "vEthernet (WSL (Hyper-V firewall))": v4("172.17.128.1"),
+    WLAN: v4("169.254.88.30"),
+    "本地连接* 10": v4("169.254.88.109"),
+    "蓝牙网络连接 2": v4("169.254.177.226"),
+    "以太网 5": v4("192.168.0.2"),
+  };
+}
+
+test("LAN ranking skips link-local and virtual adapters", () => {
+  const ranked = rankLanAddresses(windowsAdapters());
+  assert.equal(ranked[0].address, "192.168.0.2");
+  assert.ok(ranked.every((entry) => !entry.address.startsWith("169.254.")));
+  assert.ok(ranked.every((entry) => !entry.address.startsWith("127.")));
+});
+
+test("LAN ranking prefers Wi-Fi over an overlay adapter with the same address class", () => {
+  const v4 = (address) => [{ family: "IPv4", address, internal: false }];
+  const ranked = rankLanAddresses({
+    Tailscale: v4("100.83.253.5"),
+    WLAN: v4("192.168.1.20"),
+  });
+  assert.deepEqual(ranked.map((entry) => entry.address), ["192.168.1.20", "100.83.253.5"]);
+});
+
+test("LAN ranking returns nothing when only loopback and link-local exist", () => {
+  const v4 = (address, internal = false) => [{ family: "IPv4", address, internal }];
+  const ranked = rankLanAddresses({ Tailscale: v4("169.254.83.107"), "Wi-Fi": v4("127.0.0.1", true) });
+  assert.deepEqual(ranked, []);
+});
 
 test("config defaults to one allowlisted workspace", () => {
   const root = path.resolve("fixture-workspace");

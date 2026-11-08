@@ -2,13 +2,81 @@ import os from "node:os";
 import path from "node:path";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-function firstLanAddress() {
-  for (const entries of Object.values(os.networkInterfaces())) {
+/**
+ * Adapter names that never reach the phone, or only reach it over an overlay.
+ *
+ * A Windows laptop normally carries several phantom adapters: Hyper-V switches,
+ * WSL, "本地连接*" (Wi-Fi Direct), Bluetooth PAN and — with Tailscale installed
+ * but logged out — a 169.254.x.x link-local fallback. `os.networkInterfaces()`
+ * returns them in no meaningful order, so taking the first one can hand the
+ * phone an address with no route to anything. That is exactly what shipped in
+ * 0.1.0: the QR encoded the logged-out Tailscale adapter.
+ */
+const OVERLAY_ADAPTER_HINTS = ["tailscale", "zerotier", "wireguard", "hamachi", "radmin", "vpn"];
+const VIRTUAL_ADAPTER_HINTS = [
+  "vethernet", "hyper-v", "wsl", "vmware", "virtualbox", "docker", "npcap",
+  "loopback", "bluetooth", "蓝牙", "wi-fi direct", "wifi direct", "tap-", "utun",
+];
+const PHYSICAL_ADAPTER_HINTS = ["wlan", "wi-fi", "wifi", "无线", "ethernet", "以太网", "en0", "eth", "enp", "ens", "本地连接"];
+
+/**
+ * How usable an address is from another device, 0 meaning "not at all".
+ *
+ * Loopback and 169.254 link-local are hard zeros: a link-local address means the
+ * adapter never got a lease, so nothing outside the cable can reach it. Private
+ * RFC 1918 ranges are the intended path, 100.64/10 (Tailscale's CGNAT range) is
+ * reachable only from a phone that is also on the tailnet, and a plain public
+ * address on a NIC still beats nothing.
+ */
+function addressScore(address) {
+  const [a, b] = address.split(".").map(Number);
+  if (!Number.isInteger(a) || !Number.isInteger(b)) return 0;
+  if (a === 0 || a === 127 || a >= 224) return 0;
+  if (a === 169 && b === 254) return 0;
+  if (a === 192 && b === 168) return 100;
+  if (a === 10) return 95;
+  if (a === 172 && b >= 16 && b <= 31) return 90;
+  if (a === 100 && b >= 64 && b <= 127) return 60;
+  return 50;
+}
+
+function adapterScore(name = "") {
+  const lower = String(name).toLowerCase();
+  // Hosted-network names such as "本地连接* 10" carry an asterisk; the star is what
+  // distinguishes them from the plain "本地连接" of a real Ethernet card.
+  if (lower.includes("*")) return -120;
+  if (OVERLAY_ADAPTER_HINTS.some((hint) => lower.includes(hint))) return -40;
+  if (VIRTUAL_ADAPTER_HINTS.some((hint) => lower.includes(hint))) return -120;
+  if (PHYSICAL_ADAPTER_HINTS.some((hint) => lower.includes(hint))) return 25;
+  return 0;
+}
+
+/**
+ * Every IPv4 address a phone could plausibly open, best first.
+ *
+ * Exported for tests: the failure this guards against depends on the machine's
+ * adapter list, which no CI runner reproduces.
+ */
+export function rankLanAddresses(interfaces = os.networkInterfaces()) {
+  const ranked = [];
+  for (const [name, entries] of Object.entries(interfaces)) {
     for (const entry of entries ?? []) {
-      if (entry.family === "IPv4" && !entry.internal) return entry.address;
+      // `family` is "IPv4" on modern Node and 4 on older builds.
+      if (entry.family !== "IPv4" && entry.family !== 4) continue;
+      if (entry.internal) continue;
+      // A zero address score is a hard no: a friendly adapter name cannot make a
+      // link-local or loopback address routable.
+      const score = addressScore(entry.address) + adapterScore(name);
+      if (addressScore(entry.address) === 0 || score <= 0) continue;
+      ranked.push({ name, address: entry.address, score });
     }
   }
-  return "127.0.0.1";
+  // A stable sort keeps the OS order for equally scored adapters.
+  return ranked.sort((left, right) => right.score - left.score);
+}
+
+function firstLanAddress(interfaces) {
+  return rankLanAddresses(interfaces)[0]?.address ?? "127.0.0.1";
 }
 
 function parseProjects(raw, workspace) {

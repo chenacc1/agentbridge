@@ -1010,6 +1010,7 @@ function apply(ctx) {
             `项目：${registration.project.cwd}`,
             `会话：${agent.session.id}`,
             `模型：${model}`,
+            "手机需与电脑连同一个 Wi-Fi。扫码后若提示「该地址为 IP 地址」或「将要访问」，点「继续访问」即可。",
           ].join("\n\n"),
         };
       } catch (error) {

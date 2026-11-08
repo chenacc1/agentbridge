@@ -946,6 +946,13 @@ export async function startBridge() {
   });
   console.log(`AgentBridge running at http://127.0.0.1:${bridge.config.port}`);
   console.log(`WeChat scan target: ${bridge.getCurrentPairing().url}`);
+  // Silence here used to mean a QR encoding an address the phone could never reach.
+  if (new URL(bridge.config.advertisedOrigin).hostname === "127.0.0.1") {
+    console.warn(
+      "No routable LAN address found, so the QR code points at loopback and a phone cannot open it. "
+      + "Connect the machine to Wi-Fi/Ethernet, or set AGENTBRIDGE_PUBLIC_ORIGIN to the address the phone should use.",
+    );
+  }
   return bridge;
 }
 
