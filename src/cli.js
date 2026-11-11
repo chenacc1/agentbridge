@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,23 +52,37 @@ Tell the user to scan the QR with WeChat. While the phone controls this session,
 `;
 }
 
+/**
+ * The Codex skill is named `phone-codex`, not `phone`.
+ *
+ * `~/.agents/skills` is shared: Codex reads it, and so does DSH Desktop. A skill
+ * called `phone` therefore shadows the DSH plugin's `/phone` command, and typing
+ * `/phone` in DSH Desktop runs `phone --agent codex` — pairing a Codex
+ * conversation instead of the one on screen. One name per client: the plugin owns
+ * `/phone`, this skill answers `/phone-codex`.
+ */
+export const CODEX_SKILL_NAME = "phone-codex";
+const CODEX_SKILL_MARKER = "# Send a Codex project to AgentBridge";
+
 export function renderCodexPhoneSkill(entryPath = cliEntry) {
   const portableEntry = entryPath.replaceAll("\\", "/").replaceAll('"', '\\"');
   return `---
-name: phone
-description: Generate a one-time WeChat QR code for a Codex project conversation. Use only when the user explicitly invokes /phone.
+name: ${CODEX_SKILL_NAME}
+description: Generate a one-time WeChat QR code for a Codex project conversation. Use only when the user explicitly invokes /${CODEX_SKILL_NAME}.
 disable-model-invocation: true
 ---
 
-# Send a Codex project to AgentBridge
+${CODEX_SKILL_MARKER}
 
-When the user invokes \`/phone\`, you must immediately execute the following command in the terminal from the current project directory. Do not merely describe the command or ask the user to run it:
+When the user invokes \`/${CODEX_SKILL_NAME}\`, you must immediately execute the following command in the terminal from the current project directory. Do not merely describe the command or ask the user to run it:
 
 \`node "${portableEntry}" phone --agent codex --cwd .\`
 
 After a successful command, reply with the exact QR image Markdown emitted by the command (for example, \`![微信扫码二维码](<temporary QR image URL>)\`) so Codex Desktop renders a scannable image. The temporary QR image URL and pairing URL must be shown as clickable links; then tell the user to scan the 微信扫码二维码 with WeChat. Do not invent or alter either URL. If the command fails, show its exact safe error and do not claim that a QR code was generated.
 
 If the user supplies a known persisted Codex thread ID, append \`--session <thread-id>\` to resume that exact thread. Do not claim that the command attached the current desktop conversation when no thread ID was supplied: Codex does not expose a documented current-thread substitution to this local skill.
+
+> Named \`${CODEX_SKILL_NAME}\` on purpose: DSH Desktop reads the same skills folder and owns \`/phone\` for the conversation on screen. Running \`/phone\` here would pair the wrong Agent.
 `;
 }
 
@@ -271,17 +285,51 @@ async function installClaudeSkill(options) {
   return target;
 }
 
+/**
+ * Remove a `phone` skill this installer used to create.
+ *
+ * Earlier releases wrote the Codex skill as `phone`, which shadowed the DSH
+ * plugin's `/phone` in DSH Desktop because both clients read `~/.agents/skills`.
+ * Re-running the installer has to clean that up, or the wrong pairing keeps
+ * happening after an upgrade. Only a file carrying our own marker is touched —
+ * a hand-written `phone` skill belongs to whoever wrote it.
+ */
+async function removeLegacyCodexSkill(root) {
+  const legacy = path.join(root, "phone", "SKILL.md");
+  let content;
+  try {
+    content = await readFile(legacy, "utf8");
+  } catch {
+    return null;
+  }
+  if (!content.includes(CODEX_SKILL_MARKER)) return null;
+  try {
+    await rm(path.join(root, "phone"), { recursive: true, force: true });
+    return legacy;
+  } catch {
+    return null;
+  }
+}
+
 async function installCodexSkill(options) {
   if (options.user && options.project) throw new Error("Choose only one of --user or --project");
   const projectCwd = path.resolve(options.cwd ?? process.cwd());
   const root = options.project
     ? path.join(projectCwd, ".agents", "skills")
     : path.join(os.homedir(), ".agents", "skills");
-  const target = path.join(root, "phone", "SKILL.md");
+
+  const removed = await removeLegacyCodexSkill(root);
+  if (removed) {
+    console.log(`已移除会抢占 /phone 的旧技能: ${removed}`);
+    console.log("（DSH Desktop 也读这个目录，旧的 phone 技能会让 /phone 绑到 Codex 会话。）");
+  }
+
+  const target = path.join(root, CODEX_SKILL_NAME, "SKILL.md");
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, renderCodexPhoneSkill(), { encoding: "utf8", flag: "w" });
-  console.log(`Codex /phone 已安装到: ${target}`);
-  console.log("重新打开 Codex 桌面项目后，在斜杠命令列表选择 /phone。未提供 thread ID 时，它会创建新的项目会话并清楚标注。");
+  console.log(`Codex /${CODEX_SKILL_NAME} 已安装到: ${target}`);
+  console.log(`重新打开 Codex 桌面项目后，在斜杠命令列表选择 /${CODEX_SKILL_NAME}。未提供 thread ID 时，它会创建新的项目会话并清楚标注。`);
+  console.log("DSH Desktop 里的 /phone 保持归插件所有，绑定的就是屏幕上那条会话。");
   return target;
 }
 

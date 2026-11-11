@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { main, parseCliArguments, renderClaudePhoneSkill, renderCodexPhoneSkill, describeOrigin, resolvePublicOrigin } from "../src/cli.js";
@@ -23,8 +24,34 @@ test("setup parses a Codex target and installs a project-scoped phone skill", as
   });
 
   await main(["setup", "codex", "--project", "--cwd", projectDir]);
-  const skill = await readFile(path.join(projectDir, ".agents", "skills", "phone", "SKILL.md"), "utf8");
+  const skill = await readFile(path.join(projectDir, ".agents", "skills", "phone-codex", "SKILL.md"), "utf8");
   assert.match(skill, /Generate a one-time WeChat QR code for a Codex project conversation/);
+  assert.equal(existsSync(path.join(projectDir, ".agents", "skills", "phone")), false, "/phone belongs to the DSH plugin");
+});
+
+test("installing the Codex skill removes the legacy `phone` skill it used to write", async (t) => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "agentbridge-legacy-skill-"));
+  t.after(() => rm(projectDir, { recursive: true, force: true }));
+
+  // What an older release left behind: a skill named `phone` that shadows the DSH
+  // plugin's own /phone command, because both clients read this same folder.
+  const legacyDir = path.join(projectDir, ".agents", "skills", "phone");
+  await mkdir(legacyDir, { recursive: true });
+  await writeFile(path.join(legacyDir, "SKILL.md"), "---\nname: phone\n---\n\n# Send a Codex project to AgentBridge\n");
+  await main(["setup", "codex", "--project", "--cwd", projectDir]);
+  assert.equal(existsSync(legacyDir), false);
+  assert.equal(existsSync(path.join(projectDir, ".agents", "skills", "phone-codex", "SKILL.md")), true);
+});
+
+test("a hand-written `phone` skill is never deleted", async (t) => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "agentbridge-own-skill-"));
+  t.after(() => rm(projectDir, { recursive: true, force: true }));
+
+  const ownDir = path.join(projectDir, ".agents", "skills", "phone");
+  await mkdir(ownDir, { recursive: true });
+  await writeFile(path.join(ownDir, "SKILL.md"), "---\nname: phone\ndescription: mine\n---\n\nmy own skill\n");
+  await main(["setup", "codex", "--project", "--cwd", projectDir]);
+  assert.equal(existsSync(path.join(ownDir, "SKILL.md")), true);
 });
 
 test("setup rejects an unsupported target", async () => {
@@ -33,7 +60,7 @@ test("setup rejects an unsupported target", async () => {
 
 test("Codex phone skill uses the current project and never fabricates a desktop thread id", () => {
   const skill = renderCodexPhoneSkill("D:\\Agent Bridge\\bin\\agentbridge.js");
-  assert.match(skill, /name: phone/);
+  assert.match(skill, /name: phone-codex/);
   assert.match(skill, /phone --agent codex --cwd \./);
   assert.match(skill, /must immediately execute.*terminal/i);
   assert.match(skill, /pairing URL.*must be shown/i);
@@ -42,6 +69,7 @@ test("Codex phone skill uses the current project and never fabricates a desktop 
   assert.match(skill, /--session <thread-id>/);
   assert.match(skill, /do not claim.*current desktop conversation/i);
   assert.doesNotMatch(skill, /CODEX_THREAD_ID/);
+  assert.doesNotMatch(skill, /name: phone\n/, "the name must not collide with the DSH plugin's /phone");
 });
 
 test("Claude phone skill binds the official current session substitution", () => {
