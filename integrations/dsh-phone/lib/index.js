@@ -44,7 +44,33 @@ const name = "agentbridge-dsh-phone";
 // service to open one, and touching a service that was not injected throws
 // `cannot get property "agents" without inject` — which is what the phone showed
 // as a failed "新建对话" instead of the friendly message below.
-const inject = ["commands", "apiProxy", "llm", "agents"];
+//
+// `apiProxy` is deliberately NOT in this list. It was a 0.1.x desktop service and
+// DSH 0.2.x no longer provides it — a required entry for a service that does not
+// exist keeps the whole plugin "pending (waiting for service: apiProxy)" forever,
+// so `/phone` never registers. It is read through `ctx.get()`, which returns
+// undefined instead of throwing, and the features that need it degrade with a
+// message rather than blocking the entire plugin.
+const inject = ["commands", "llm", "agents"];
+
+/** The 0.1.x desktop RPC bridge, when this host still has one. */
+function apiProxyOf(ctx) {
+  // `ctx.get` reads the service store without an inject requirement and returns
+  // undefined when nothing provides it. The property fallback keeps plain-object
+  // contexts (tests, and any host that hands a bare object) working, while the
+  // catch absorbs cordis' `cannot get property "apiProxy" without inject`.
+  try {
+    const provided = ctx.get?.("apiProxy");
+    if (provided) return provided;
+  } catch {
+    // No service store on this context.
+  }
+  try {
+    return ctx.apiProxy ?? null;
+  } catch {
+    return null;
+  }
+}
 const DEFAULT_ORIGIN = "http://127.0.0.1:8787";
 const POLL_DELAY_MS = 800;
 const EVENT_BATCH_DELAY_MS = 120;
@@ -400,30 +426,43 @@ async function bringUpBridge(log) {
   const origin = localOrigin();
   await startBridge(origin, log);
   if (!remoteAllowed()) return;
+  await applyRemoteAddress(origin, log);
+}
 
+/**
+ * Try to move the running bridge onto the resolved address.
+ *
+ * Returns "done" when the advertised address is already right or was just set,
+ * and otherwise names the reason, which is what `/phone` explains to the user
+ * (a stray bridge on the port, no usable path, a stop that was refused). There is
+ * deliberately no background retry: the decision costs a tunnel, and a loop that
+ * keeps opening them would be worse than a stale address the user can fix by
+ * restarting the desktop.
+ */
+async function applyRemoteAddress(origin, log) {
   const health = await bridgeHealth(origin);
-  if (!health) return; // startBridge already logged why nothing came up.
+  if (!health) return "no-bridge"; // startBridge already logged why nothing came up.
 
   const remote = await resolveRemoteOrigin(log);
-  if (!remote) return;
+  if (!remote) return "no-path";
   if (health.advertisedOrigin === remote.origin && (!remote.accessKey || health.accessKeyRequired === true)) {
-    log(`remote mode already active: ${remote.origin}`);
-    return;
+    return "done";
   }
   if (health.autostart !== true) {
     log(
       `the bridge already running at ${origin} was not started by this plugin, so its address cannot be changed. `
-      + `Stop it (or restart DSH Desktop after closing it) to switch to ${remote.origin}.`,
+      + `Stop it (or close it and restart DSH Desktop) to switch to ${remote.origin}.`,
     );
-    return;
+    return "foreign-bridge";
   }
-  if (!(await stopBridge(origin, log))) return;
+  if (!(await stopBridge(origin, log))) return "stop-failed";
   if (await startBridge(origin, log, remoteEnv(remote))) {
     log(`remote mode ready: ${remote.origin} (via ${remote.how})`);
-    return;
+    return "done";
   }
   log("the bridge did not come up with the public address, restarting it on this Wi-Fi only");
   await startBridge(origin, log);
+  return "start-failed";
 }
 
 function clipped(value, limit) {
@@ -608,6 +647,17 @@ export class PhoneConnections {
     this.liveModelSelections = new WeakMap();
     this.ctx.on("session/event", (session, event) => this.captureEvent(session, event));
     this.ctx.on("agent/disposed", ({ agent }) => this.dispose(agent.session.id));
+    // A conversation reopened inside the desktop app gets a fresh agent; if the
+    // bridge already holds a paired session for it, re-attach without waiting for
+    // a human to run /phone again. This is what makes a DSH Desktop update
+    // invisible to the phone.
+    this.ctx.on("agent/created", (payload) => {
+      const agent = payload?.agent ?? payload;
+      if (agent?.session?.id) void this.#restoreChannel(agent);
+    });
+    // The bridge answers with the conversation ids it is waiting on; a short
+    // cache keeps a burst of reopened conversations from each asking.
+    this.expectedCache = null;
   }
 
   lifetimeFor(sessionId) {
@@ -629,6 +679,9 @@ export class PhoneConnections {
     // A reconnect must not consume a pairing code or add a device: the phone that
     // already owns this conversation keeps owning it.
     const reconnecting = options.reconnecting === true;
+    // A restore after the desktop restarted: attach the bridge session that
+    // already exists, never mint one for a conversation the phone never paired.
+    const existingOnly = options.existingOnly === true;
     const response = await fetch(`${origin}/api/local/dsh-desktop/register`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -642,6 +695,7 @@ export class PhoneConnections {
         integrationVersion: INTEGRATION_VERSION,
         ...(bridgeSessionId ? { bridgeSessionId } : {}),
         ...(reconnecting ? { reconnect: true } : {}),
+        ...(existingOnly ? { existingOnly: true } : {}),
       }),
     });
     const registration = await readResponse(response);
@@ -711,6 +765,102 @@ export class PhoneConnections {
     })().finally(() => { state.reconnecting = null; });
     return state.reconnecting;
   }
+
+  /**
+   * Re-attach the conversations a restarted desktop app is opening again.
+   *
+   * After DSH Desktop updates or restarts, the bridge still has every paired
+   * session and its history, but the desktop-side channel is gone. This asks the
+   * bridge which conversations are waiting for a companion, matches them against
+   * the agents this process has live, and re-registers only those. Conversations
+   * that were never paired are left alone, so opening them cannot mint new
+   * sessions on the phone.
+   */
+  async restoreKnownConversations() {
+    const expected = await this.#expectedConversationsWithRetry();
+    if (!expected || expected.size === 0) return 0;
+    let restored = 0;
+    for (const agent of this.#liveAgents()) {
+      const sessionId = agent?.session?.id;
+      if (!sessionId || this.bySession.has(sessionId) || !expected.has(sessionId)) continue;
+      try {
+        await this.connect(agent, { reconnecting: true, existingOnly: true });
+        restored += 1;
+      } catch (error) {
+        this.ctx.logger?.warn?.(`AgentBridge: could not restore the phone channel for "${agent.session.header?.title ?? sessionId}": ${textFromError(error)}`);
+      }
+    }
+    if (restored > 0) {
+      this.ctx.logger?.warn?.(`AgentBridge: restored ${restored} phone conversation${restored === 1 ? "" : "s"} after the desktop restarted`);
+    }
+    return restored;
+  }
+
+  async #restoreChannel(agent) {
+    const sessionId = agent?.session?.id;
+    if (!sessionId || this.bySession.has(sessionId)) return;
+    try {
+      const expected = await this.#expectedConversationsWithRetry();
+      if (!expected || !expected.has(sessionId) || this.bySession.has(sessionId)) return;
+      await this.connect(agent, { reconnecting: true, existingOnly: true });
+      this.ctx.logger?.warn?.(`AgentBridge: restored the phone channel for "${agent.session.header?.title ?? sessionId}" after the desktop restarted`);
+    } catch (error) {
+      this.ctx.logger?.warn?.(`AgentBridge: could not restore the phone channel: ${textFromError(error)}`);
+    }
+  }
+
+  #liveAgents() {
+    let agents;
+    try {
+      agents = this.ctx.agents ?? null;
+    } catch {
+      agents = null;
+    }
+    try {
+      return typeof agents?.list === "function" ? agents.list() : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The conversations the bridge is waiting to hear from again.
+   *
+   * Fetched over loopback, cached briefly so several agents opening at once do
+   * not each ask. The register call remains the authority: the bridge refuses
+   * an id it has no session for, so a stale set is harmless.
+   */
+  async #expectedConversations() {
+    const now = Date.now();
+    if (this.expectedCache && now - this.expectedCache.at < 5_000) return this.expectedCache.set;
+    const response = await fetch(`${localOrigin()}/api/local/dsh-desktop/expected`, {
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!response.ok) return null;
+    const body = await response.json().catch(() => null);
+    const set = new Set(Array.isArray(body?.providerSessionIds) ? body.providerSessionIds : []);
+    this.expectedCache = { at: now, set };
+    return set;
+  }
+
+  /**
+   * The bridge may still be starting when a conversation is opened moments after
+   * an update, so a failed probe is retried for a few seconds instead of being
+   * lost. This is loopback-only, so it does not wait on a tunnel.
+   */
+  async #expectedConversationsWithRetry({ timeoutMs = 6_000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        const expected = await this.#expectedConversations();
+        if (expected !== null) return expected;
+      } catch {
+        // The bridge is not listening yet.
+      }
+      if (Date.now() >= deadline) return null;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
   // Interaction retries live on the *lifetime*, not on the channel state. A reconnect
   // (or a dropped channel) throws the state away; a question that failed to cross the
   // wire must survive that, otherwise the phone sees the card a second after the
@@ -729,7 +879,7 @@ export class PhoneConnections {
   // through `apiProxy.respond`. Same seam the desktop window uses, which is what
   // lets a phone answer a question the desktop is also showing.
   async watchInteractions(state) {
-    const events = this.ctx.apiProxy?.events;
+    const events = apiProxyOf(this.ctx)?.events;
     if (typeof events?.mux !== "function") return;
     const sessionId = state.agent.session.id;
     const scope = this.#interactionScope(sessionId);
@@ -818,14 +968,17 @@ export class PhoneConnections {
   }
 
   async respond(rpcId, result) {
-    if (typeof this.ctx.apiProxy?.respond !== "function") throw new Error("This DSH Desktop build cannot answer questions from the phone");
-    return await this.ctx.apiProxy.respond({ type: "client-response", rpcId, result });
+    const apiProxy = apiProxyOf(this.ctx);
+    if (typeof apiProxy?.respond !== "function") throw new Error("This DSH Desktop build cannot answer questions from the phone");
+    return await apiProxy.respond({ type: "client-response", rpcId, result });
   }
 
   async modelDirectory(agent) {
     const current = selectionFromAgent(agent);
     try {
-      const response = await this.ctx.apiProxy.sessions.models({
+      const apiProxy = apiProxyOf(this.ctx);
+      if (typeof apiProxy?.sessions?.models !== "function") return current;
+      const response = await apiProxy.sessions.models({
         rpcId: randomUUID(),
         payload: { sessionId: agent.session.id },
       });
@@ -848,7 +1001,11 @@ export class PhoneConnections {
   }
 
   async hostModelDirectory(current, sessionError) {
-    const response = await this.ctx.apiProxy.llm.models({ rpcId: randomUUID(), payload: {} });
+    const apiProxy = apiProxyOf(this.ctx);
+    if (typeof apiProxy?.llm?.models !== "function") {
+      throw new Error("DSH Desktop did not provide its host model directory");
+    }
+    const response = await apiProxy.llm.models({ rpcId: randomUUID(), payload: {} });
     const result = response?.result;
     if (!result?.ok) throw new Error(result?.error?.message || "DSH Desktop did not provide its host model directory");
     return compactModelDirectory(result.value, current, [{
@@ -886,7 +1043,20 @@ export class PhoneConnections {
   }
 
   async selectModel(agent, requested) {
-    const response = await this.ctx.apiProxy.sessions.selectModel({
+    const apiProxy = apiProxyOf(this.ctx);
+    if (typeof apiProxy?.sessions?.selectModel !== "function") {
+      // 0.2.x hosts have no desktop RPC bridge; the host-side llm service is the
+      // remaining source of truth for which models can be selected.
+      const resolved = await this.ctx.llm.resolveCallConfig(requested);
+      const selected = {
+        provider: resolved?.provider ?? requested.provider,
+        model: resolved?.model ?? requested.model,
+        ...(resolved?.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}),
+      };
+      this.liveModelSelections.set(agent, selected);
+      return selected;
+    }
+    const response = await apiProxy.sessions.selectModel({
       rpcId: randomUUID(),
       payload: { sessionId: agent.session.id, ...requested },
     });
@@ -1195,6 +1365,27 @@ function pairingAddressNote(url) {
   return "这是公网地址，手机用流量也能打开；二维码里已带访问密钥，别把它转发给别人。";
 }
 
+/**
+ * Why this QR code is a LAN address, when the user expects a public one.
+ *
+ * The address is decided once, when the plugin loads: it starts its own bridge and
+ * then restarts that child onto the tunnel address. A bridge on 8787 it did not
+ * start (a manual `npx`/`npm start`, or a leftover from an earlier session) is
+ * never restarted, because that would cut whatever is running on it — so the QR
+ * code quietly stays on the LAN. That explanation belongs in the answer, not only
+ * in the desktop log.
+ */
+function lanOnlyReason(health) {
+  if (!health) return null;
+  if (health.autostart === false) {
+    return "当前是局域网地址：8787 上运行着一个不是本插件启动的桥（比如你手动跑过 npx / npm start）。插件不会去重启别人的进程，所以没有切到公网。停掉它再重启 DSH Desktop 就会切过去。";
+  }
+  if (health.advertisedOrigin && !health.remoteProvider) {
+    return "当前是局域网地址：这次启动时没能建立起公网通道。具体原因在 DSH 的日志里（搜 [agentbridge-dsh-phone]），常见是 cloudflared 没装好或网络被拦。";
+  }
+  return null;
+}
+
 function apply(ctx) {
   const connections = new PhoneConnections(ctx);
   ctx.commands.register({
@@ -1208,6 +1399,8 @@ function apply(ctx) {
       try {
         const registration = await connections.connect(agent);
         const model = [agent.options.provider, agent.options.model].filter(Boolean).join(" / ") || "当前 DSH 配置";
+        const health = await bridgeHealth(localOrigin()).catch(() => null);
+        const lanReason = health?.remoteProvider ? null : lanOnlyReason(health);
         return {
           kind: "success",
           text: [
@@ -1218,6 +1411,7 @@ function apply(ctx) {
             `会话：${agent.session.id}`,
             `模型：${model}`,
             pairingAddressNote(registration.pairing.url),
+            ...(lanReason ? [lanReason] : []),
             // A one-line, no-strings ask. Nothing fires on the user's behalf —
             // market ranking reads stars, so this is where a willing user can
             // help without leaving the conversation.
@@ -1243,7 +1437,16 @@ function apply(ctx) {
   // when nothing came up. The reason is logged instead of swallowed, because
   // "nothing happened" is undiagnosable.
   void bringUpBridge((message) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] ${message}`))
-    .catch((error) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] auto-start crashed: ${textFromError(error)}`));
+    .catch((error) => ctx.logger?.warn?.(`[agentbridge-dsh-phone] auto-start crashed: ${textFromError(error)}`))
+    // Once the bridge is up (or its start failed), recover any conversation the
+    // desktop app reopened after an update: the phone should not notice a
+    // restart it did not ask for. Conversations opened later arrive as
+    // `agent/created` events instead.
+    .finally(() => {
+      void connections.restoreKnownConversations().catch((error) => {
+        ctx.logger?.warn?.(`[agentbridge-dsh-phone] restore of known conversations failed: ${textFromError(error)}`);
+      });
+    });
 }
 
 export { apply, inject, name };
