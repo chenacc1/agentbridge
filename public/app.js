@@ -310,20 +310,82 @@ async function resolveRequest(requestId, body) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...options,
-    headers: options.body ? { "content-type": "application/json", ...(options.headers ?? {}) } : options.headers,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      ...options,
+      headers: options.body ? { "content-type": "application/json", ...(options.headers ?? {}) } : options.headers,
+    });
+  } catch (error) {
+    // No HTTP status at all: the origin itself is unreachable — almost always
+    // because the tunnel hostname changed and this page is still on the old one.
+    noteConnectionFailure("offline");
+    throw error;
+  }
   const body = response.headers.get("content-type")?.includes("application/json") ? await response.json() : null;
   if (!response.ok) {
+    if (response.status === 401) noteConnectionFailure("unauthorized");
     const error = new Error(body?.error ?? `请求失败 (${response.status})`);
     error.status = response.status;
     error.code = body?.code;
     error.diagnostics = body?.diagnostics;
     throw error;
   }
+  noteConnectionSuccess();
   return body;
+}
+
+/**
+ * A page that cannot reach its bridge must say so.
+ *
+ * After a tunnel rebuild the phone keeps rendering the last transcript and the
+ * connection chip just says 正在重连 — which reads as "still working" while every
+ * request is already failing. Two failures in a row is enough evidence to show a
+ * banner that explains what to do, because there is nothing else the page can do:
+ * the address it was loaded from no longer exists.
+ */
+const connectionWatch = { failures: 0, banner: null };
+
+function noteConnectionFailure(kind) {
+  connectionWatch.failures += 1;
+  if (connectionWatch.failures < 2) return;
+  showStaleBanner(kind);
+}
+
+function noteConnectionSuccess() {
+  connectionWatch.failures = 0;
+  if (connectionWatch.banner) {
+    connectionWatch.banner.remove();
+    connectionWatch.banner = null;
+  }
+}
+
+function showStaleBanner(kind) {
+  if (connectionWatch.banner) return;
+  const banner = document.createElement("div");
+  banner.id = "stale-banner";
+  banner.setAttribute("role", "alert");
+  banner.style.cssText = [
+    "position:fixed", "inset:0 0 auto 0", "z-index:9999",
+    "padding:12px 16px", "font:14px/1.5 system-ui,-apple-system,sans-serif",
+    "background:#b3261e", "color:#fff", "box-shadow:0 2px 8px rgba(0,0,0,.4)",
+  ].join(";");
+  banner.textContent = kind === "unauthorized"
+    ? "登录状态已失效：这台手机的配对属于旧地址。请在电脑上重新执行 /phone，扫描新的二维码。"
+    : "连不上电脑：二维码地址可能已经更换（隧道重建会换域名）。请在电脑上重新执行 /phone 并扫描新二维码。";
+  const dismiss = document.createElement("button");
+  dismiss.textContent = "知道了";
+  dismiss.style.cssText = "margin-left:12px;padding:4px 10px;border:0;border-radius:6px;background:rgba(255,255,255,.2);color:#fff;font:inherit";
+  dismiss.addEventListener("click", () => {
+    banner.remove();
+    connectionWatch.banner = null;
+    // Keep counting: a still-broken page will show it again on the next failure.
+    connectionWatch.failures = 0;
+  });
+  banner.appendChild(dismiss);
+  document.body.appendChild(banner);
+  connectionWatch.banner = banner;
 }
 
 function toast(message) {

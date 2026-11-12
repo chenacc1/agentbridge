@@ -5,6 +5,7 @@ import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import QRCode from "qrcode";
 import { loadConfig, isLoopback } from "./config.js";
+import { announceOriginChange } from "./origin-announcer.js";
 import { EventStore } from "./event-store.js";
 import { PairingManager } from "./pairing.js";
 import { AdapterRegistry } from "./adapter-registry.js";
@@ -33,6 +34,9 @@ function json(res, statusCode, value, headers = {}) {
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    // A renewal cookie rides every authenticated JSON response when the session
+    // was just extended; explicit per-handler cookies (logout, revoke) still win.
+    ...(res.renewCookie ? { "set-cookie": res.renewCookie } : {}),
     ...headers,
   });
   res.end(JSON.stringify(value));
@@ -601,6 +605,16 @@ export async function createBridge(options = {}) {
         // must not consume a pairing code, mint a device, or take the lease away
         // from the phone that is already driving this conversation.
         const reconnecting = body.reconnect === true;
+        // An automatic restore (the desktop app just restarted and is opening a
+        // conversation the phone already owns) passes `existingOnly`: it must bind
+        // the bridge session that already exists and never create a new one, or
+        // simply opening a never-paired conversation would fill the phone's
+        // workspace drawer with sessions nobody asked for.
+        if (reconnecting && body.existingOnly === true
+          && !sessions.findByProvider("deepseek-harness-desktop", providerSessionId)) {
+          dshDesktopChannels.revoke(registration.id);
+          throw Object.assign(new Error("No AgentBridge session is bound to this conversation"), { statusCode: 404 });
+        }
         const device = reconnecting ? null : pairing.createSession("DSH Desktop /phone");
         let session;
         try {
@@ -636,6 +650,27 @@ export async function createBridge(options = {}) {
           qrImageUrl,
           channel,
         });
+      }
+
+      // Which conversations should a freshly started desktop companion re-attach?
+      //
+      // After DSH Desktop updates or restarts, the bridge still has the sessions
+      // and history the phone was using, but the desktop-side channel is gone and
+      // nothing re-registers it: the phone reads "桌面端未连接" until someone runs
+      // /phone again. The companion asks this endpoint on startup and whenever a
+      // conversation is opened, and re-registers only these — a never-paired
+      // conversation stays silent instead of appearing as a new session.
+      if (req.method === "GET" && url.pathname === "/api/local/dsh-desktop/expected") {
+        if (!isLoopback(req.socket.remoteAddress)) throw Object.assign(new Error("Local access only"), { statusCode: 403 });
+        const providerSessionIds = [];
+        for (const session of sessions.list()) {
+          if (session.adapterId !== "deepseek-harness-desktop") continue;
+          const providerSessionId = session.providerSessionId;
+          if (!providerSessionId) continue;
+          if (dshDesktopChannels.isOnline(providerSessionId)) continue;
+          providerSessionIds.push(providerSessionId);
+        }
+        return json(res, 200, { providerSessionIds: [...new Set(providerSessionIds)] });
       }
 
       if (req.method === "POST" && url.pathname === "/api/pairings/exchange") {
@@ -702,6 +737,19 @@ export async function createBridge(options = {}) {
       requireAccessKey(req, url, config);
       const device = pairing.authenticate(requestToken(req));
       if (!device) throw Object.assign(new Error("Authentication required"), { statusCode: 401 });
+
+      // Sliding renewal: a phone that keeps using the console is never asked to
+      // scan a QR again merely because its original window ran out. The refreshed
+      // cookie rides whichever response this request produces (JSON or SSE), so
+      // opening the app once is enough for the device to stay paired. Idle
+      // sessions still expire on the normal TTL.
+      if (pairing.renewIfNeeded(device.id)) {
+        res.renewCookie = sessionCookie(
+          requestToken(req),
+          config.secureCookies && !isLoopback(req.socket.remoteAddress),
+          config.sessionTtlMs,
+        );
+      }
 
       if (req.method === "GET" && url.pathname === "/api/devices") {
         return json(res, 200, { devices: pairing.listDevices(), currentDeviceId: device.id });
@@ -820,6 +868,7 @@ export async function createBridge(options = {}) {
           "cache-control": "no-cache, no-transform",
           connection: "keep-alive",
           "x-accel-buffering": "no",
+          ...(res.renewCookie ? { "set-cookie": res.renewCookie } : {}),
         });
         res.write(": connected\n\n");
         const writeEvent = (event) => {
@@ -1005,6 +1054,17 @@ export async function startBridge() {
       + "(set it in the desktop console, or point AGENTBRIDGE_NOTIFY_IMPORT at an older .agentbridge folder)",
     );
   }
+  // A quick tunnel gets a new hostname every time it is rebuilt, and the phone that
+  // is already paired is sitting on the old one: its own page can no longer be told
+  // anything, so the change goes out over the push channel instead.
+  void announceOriginChange({
+    dataDir: bridge.config.dataDir,
+    origin: bridge.config.advertisedOrigin,
+    notifier: bridge.notifier,
+    deviceCount: bridge.pairing.listDevices().length,
+    machineName: bridge.config.machineName,
+    log: (message) => console.log(message),
+  }).catch((error) => console.warn(`Address announcement skipped: ${error.message}`));
   // Silence here used to mean a QR encoding an address the phone could never reach.
   if (new URL(bridge.config.advertisedOrigin).hostname === "127.0.0.1") {
     console.warn(

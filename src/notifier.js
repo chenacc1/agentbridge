@@ -63,6 +63,19 @@ export function describeNotification(kind, payload = {}, context = {}) {
     case "notify.test": {
       return { title: "🔔 AgentBridge 通知测试", text: [`${where}`, "如果你看到这条消息，通知链路是通的。"].filter(Boolean).join("\n") };
     }
+    case "bridge.moved": {
+      // The one message a phone cannot get any other way: it is still sitting on
+      // the old address, so its own page can no longer be told anything.
+      return {
+        title: "🔄 AgentBridge 地址已更换",
+        text: [
+          `${where}`,
+          "隧道重建后二维码地址变了，手机上的旧链接已经打不开。",
+          `新地址：${clip(payload.origin ?? "", 200)}`,
+          "在电脑上重新执行 /phone 并扫描新二维码，或直接打开上面的新地址。",
+        ].filter(Boolean).join("\n"),
+      };
+    }
     default:
       return { title: DEFAULT_TITLES[kind] ?? "AgentBridge", text: where };
   }
