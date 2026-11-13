@@ -134,14 +134,20 @@ const TRANSCRIPT = `(() => {
   const log = document.querySelector('#event-log');
   const entries = [...log.querySelectorAll('.event-entry')];
   const label = (element) => element.querySelector('strong')?.textContent ?? '';
+  // Intermediate work is deliberately folded into <details>: its text is in the DOM,
+  // one tap away, but not printed into the page's own text. Both sides are reported so
+  // the phases below can tell "hidden on purpose" from "lost".
+  const collapsed = (element) => element.querySelector('.step-detail .message-markdown')?.textContent ?? '';
   return {
     entries: entries.length,
     domNodes: log.querySelectorAll('*').length,
-    agent: entries.filter((element) => label(element) === 'Agent').length,
+    // Only the answer renders as a plain Agent row; intermediate messages carry .step.
+    agent: entries.filter((element) => label(element) === 'Agent' && !element.classList.contains('step')).length,
+    steps: entries.filter((element) => element.classList.contains('step')).map(collapsed).join(' | '),
     user: entries.filter((element) => label(element) === '你').length,
     streaming: entries
       .filter((element) => label(element) === 'Agent 正在回复')
-      .map((element) => element.querySelector('.message-markdown')?.innerText ?? ''),
+      .map((element) => collapsed(element)),
     text: log.innerText,
   };
 })()`;
@@ -202,6 +208,11 @@ const chunk = (turn, step, index, text) => ({
 });
 
 const expectedAssistant = [];
+// Only the last assistant message of a turn is the answer; the ones before it are
+// progress and are rendered collapsed, so they are checked against the DOM rather
+// than against the visible text.
+const expectedFinalAssistant = [];
+const expectedIntermediate = [];
 const expectedUser = [];
 for (let turn = 1; turn <= TURNS; turn += 1) {
   await push({ type: "turn/start", seq: ++seq, time: seq, data: { turn } });
@@ -216,6 +227,8 @@ for (let turn = 1; turn <= TURNS; turn += 1) {
       await push(chunk(turn, step, index - 1, piece));
     }
     expectedAssistant.push(text);
+    if (step === STEPS_PER_TURN) expectedFinalAssistant.push(text);
+    else expectedIntermediate.push(text);
     await push({
       type: "assistant/message",
       seq: ++seq,
@@ -259,14 +272,16 @@ try {
   await waitFor(cdp, "document.querySelectorAll('.event-entry').length > 0", { label: "the transcript to render" });
   const replayMs = await settle(cdp, startedAt);
   const shown = await cdp.evaluate(TRANSCRIPT);
-  const missingAssistant = expectedAssistant.filter((text) => !shown.text.includes(text.trim())).length;
+  const missingFinal = expectedFinalAssistant.filter((text) => !shown.text.includes(text.trim())).length;
   const missingUser = expectedUser.filter((text) => !shown.text.includes(text)).length;
+  const missingSteps = expectedIntermediate.filter((text) => !shown.steps.includes(text.trim())).length;
 
   console.log(`\n--- Phase A: the phone opens a long conversation ---`);
   console.log(`Transcript settled in ${replayMs}ms; ${shown.entries} entries, ${shown.domNodes} DOM nodes`);
-  console.log(`Rendered Agent replies: ${shown.agent}/${expectedAssistant.length}   user messages: ${shown.user}/${expectedUser.length}`);
-  console.log(`Absent from the phone screen: assistant=${missingAssistant} user=${missingUser}`);
-  const phaseA = missingAssistant === 0 && missingUser === 0 && shown.agent === expectedAssistant.length;
+  console.log(`Answers rendered in full: ${shown.agent}/${expectedFinalAssistant.length}   user messages: ${shown.user}/${expectedUser.length}`);
+  console.log(`Intermediate steps folded (still in the DOM): ${expectedIntermediate.length - missingSteps}/${expectedIntermediate.length}`);
+  console.log(`Absent from the phone screen: answers=${missingFinal} user=${missingUser} steps=${missingSteps}`);
+  const phaseA = missingFinal === 0 && missingUser === 0 && missingSteps === 0 && shown.agent === expectedFinalAssistant.length;
   console.log(`Phase A: ${phaseA ? "GREEN" : "RED"}`);
   if (!phaseA) failed = true;
 
@@ -311,19 +326,19 @@ try {
 
   const committedAt = Date.now();
   await waitFor(cdp, NO_STREAMING_ENTRY, { label: "the streamed reply to be replaced by the committed message" });
-  const expectedCount = expectedAssistant.length + 1;
-  await waitFor(cdp, `[...document.querySelectorAll('#event-log .event-entry')].filter((element) => element.querySelector('strong')?.textContent === 'Agent').length === ${expectedCount}`, { label: "the committed reply to render" });
+  const expectedCount = expectedFinalAssistant.length + 1;
+  await waitFor(cdp, `[...document.querySelectorAll('#event-log .event-entry')].filter((element) => !element.classList.contains('step') && element.querySelector('strong')?.textContent === 'Agent').length === ${expectedCount}`, { label: "the committed reply to render" });
   const committed = await cdp.evaluate(TRANSCRIPT);
   const committedMs = Date.now() - committedAt;
 
   console.log(`\n--- Phase C: the answer completes ---`);
   console.log(`Committed reply visible: ${committed.text.includes(liveText.trim())}; the screen updated ${committedMs}ms after the final chunk`);
-  console.log(`Total rendered Agent replies: ${committed.agent}/${expectedCount}`);
+  console.log(`Answers rendered in full: ${committed.agent}/${expectedCount}`);
   const phaseC = committed.text.includes(liveText.trim()) && committed.agent === expectedCount;
   console.log(`Phase C: ${phaseC ? "GREEN" : "RED"}`);
   if (!phaseC) failed = true;
 
-  console.log(`\nResult: ${failed ? "RED" : "GREEN - the phone shows the whole conversation, live and after a reload"}`);
+  console.log(`\nResult: ${failed ? "RED" : "GREEN - the phone shows every answer in full, progress folded, live and after a reload"}`);
   process.exitCode = failed ? 1 : 0;
 } finally {
   cdp?.close();

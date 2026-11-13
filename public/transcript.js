@@ -332,7 +332,10 @@ function inputEntry(event, options, settledOutcome) {
  * full turned one request into a wall of overlapping drafts on a phone screen.
  */
 function collapsedEntry(event, label, summary, text, className, options) {
-  const cached = cachedEntry(options.cache, event);
+  // A streaming row changes on every chunk, so it must never be cached — caching it
+  // froze the collapsed text at the first batch while the answer kept growing.
+  const stable = event.kind !== "message.delta";
+  const cached = stable ? cachedEntry(options.cache, event) : null;
   if (cached) return cached;
   const content = renderMessageMarkdown(String(text ?? ""), options.math ? { math: options.math } : undefined);
   const entry = {
@@ -340,7 +343,7 @@ function collapsedEntry(event, label, summary, text, className, options) {
     className,
     html: `<time class="event-time">${formatTime(event.time, options.formatMessageTime)}</time><div class="event-body"><strong>${escapeHtml(label)}</strong><details class="step-detail"><summary>${escapeHtml(summary)}</summary><div class="message-markdown">${content}</div></details></div>`,
   };
-  return rememberEntry(options.cache, event, entry);
+  return stable ? rememberEntry(options.cache, event, entry) : entry;
 }
 
 /** Turn a session's events into the list of transcript entries to display. */
