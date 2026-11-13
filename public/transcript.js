@@ -221,26 +221,43 @@ function entryFor(event, label, text, className, supportsMarkdown, { formatMessa
 }
 
 /**
- * Tool calls get the two affordances a person actually needs: the command is
- * copyable, and a long output collapses instead of pushing the conversation off the
- * screen. Both work without JavaScript state — `<details>` is the disclosure.
+ * Tool calls get one line that says what is being done, and the raw material
+ * behind a disclosure.
+ *
+ * The phone is read at a glance, on a narrow screen, often while walking: the
+ * command and its output are the least useful thing on it. So the row is
+ * "调用 Bash · 检查端口占用" and everything else waits behind 详情 — still one tap
+ * away for the moment it matters, never in the way.
  */
+function toolSummary(event) {
+  const payload = event.payload ?? {};
+  const name = String(payload.type ?? payload.toolName ?? payload.name ?? "工具");
+  // "What is it doing" is the title when the Agent gave us one. A raw command is not a
+  // summary — the whole point of this row is to keep it out of the reader's way — so the
+  // command contributes at most its program name.
+  const stated = String(payload.title ?? payload.description ?? "").trim();
+  const command = String(payload.command ?? "").trim();
+  const program = command ? command.split(/\s+/)[0] : "";
+  const purpose = stated
+    ? (stated.length > 60 ? `${stated.slice(0, 60)}…` : stated)
+    : (program ? `${program} …` : "");
+  const suffix = payload.status ? ` · ${payload.status}` : "";
+  return { name, purpose, suffix };
+}
+
 function toolEntry(event, label, text, options) {
   const cached = cachedEntry(options.cache, event);
   if (cached) return cached;
-  const body = String(text ?? "");
-  const long = body.length > 240;
-  const command = typeof event.payload?.command === "string" ? event.payload.command : "";
-  const copy = command
-    ? `<button class="tool-copy" type="button" data-copy-tool="${escapeHtml(body)}">复制命令</button>`
+  const body = String(text ?? "").trim();
+  const { name, purpose, suffix } = toolSummary(event);
+  const headline = purpose ? `调用 ${name} · ${purpose}${suffix}` : `调用 ${name}${suffix}`;
+  const details = body
+    ? `<details class="tool-output"><summary>详情</summary><pre>${escapeHtml(body)}</pre></details>`
     : "";
-  const shown = long
-    ? `<details class="tool-output"><summary>展开完整输出（${body.length} 字符）</summary><pre>${escapeHtml(body)}</pre></details>`
-    : `<div class="message-markdown"><p>${escapeHtml(body)}</p></div>`;
   const entry = {
     key: entryKey(event),
-    className: "tool",
-    html: `<time class="event-time">${formatTime(event.time, options.formatMessageTime)}</time><div class="event-body"><strong>${escapeHtml(label)}</strong>${copy}${shown}</div>`,
+    className: "tool tool-compact",
+    html: `<time class="event-time">${formatTime(event.time, options.formatMessageTime)}</time><div class="event-body"><strong>${escapeHtml(label)}</strong><p class="tool-line">${escapeHtml(headline)}</p>${details}</div>`,
   };
   return rememberEntry(options.cache, event, entry);
 }
@@ -307,6 +324,25 @@ function inputEntry(event, options, settledOutcome) {
   return rememberEntry(options.cache, event, entry, cacheKey);
 }
 
+/**
+ * A row that stays out of the way until asked: the summary line is what the
+ * reader needs, the text is one tap down.
+ *
+ * Intermediate assistant messages are progress, not answers. Rendering them in
+ * full turned one request into a wall of overlapping drafts on a phone screen.
+ */
+function collapsedEntry(event, label, summary, text, className, options) {
+  const cached = cachedEntry(options.cache, event);
+  if (cached) return cached;
+  const content = renderMessageMarkdown(String(text ?? ""), options.math ? { math: options.math } : undefined);
+  const entry = {
+    key: entryKey(event),
+    className,
+    html: `<time class="event-time">${formatTime(event.time, options.formatMessageTime)}</time><div class="event-body"><strong>${escapeHtml(label)}</strong><details class="step-detail"><summary>${escapeHtml(summary)}</summary><div class="message-markdown">${content}</div></details></div>`,
+  };
+  return rememberEntry(options.cache, event, entry);
+}
+
 /** Turn a session's events into the list of transcript entries to display. */
 export function buildEntries(relevant, options = {}) {
   const statusLabel = options.statusLabel ?? ((kind) => DEFAULT_STATUS_LABELS[kind] ?? kind);
@@ -321,6 +357,14 @@ export function buildEntries(relevant, options = {}) {
       settledInputs.set(event.payload.requestId, event.payload.outcome ?? "answered");
     }
   }
+  // Only the last assistant message of a turn is the answer; everything before it is
+  // the work that produced it.
+  const finalAssistantOfTurn = new Map();
+  for (const event of relevant) {
+    if (event.kind === "message.completed" && event.payload?.role === "assistant") {
+      finalAssistantOfTurn.set(event.turnId, event.eventId ?? entryKey(event));
+    }
+  }
 
   const renderedDeltas = new Set();
   const entries = [];
@@ -328,7 +372,15 @@ export function buildEntries(relevant, options = {}) {
     if (event.kind === "message.delta") {
       if (completedTurns.has(event.turnId) || renderedDeltas.has(event.turnId)) continue;
       renderedDeltas.add(event.turnId);
-      entries.push(entryFor(event, "Agent 正在回复", textByTurn.get(event.turnId) ?? "", "assistant", true, settings));
+      // Live text is progress, so it stays collapsed until the answer itself lands.
+      entries.push(collapsedEntry(
+        event,
+        "Agent 正在回复",
+        "正在生成回答…（点开可看实时输出）",
+        textByTurn.get(event.turnId) ?? "",
+        "assistant streaming",
+        settings,
+      ));
     } else if (event.kind === "message.completed") {
       // An assistant message that carried only tool calls has no text. Rendering it makes
       // an empty "Agent" bubble between the tool rows is pure noise, so skip it — unless it
@@ -336,7 +388,20 @@ export function buildEntries(relevant, options = {}) {
       const messageText = String(event.payload.text ?? "");
       const messageAttachments = Array.isArray(event.payload.attachments) ? event.payload.attachments : [];
       if (!messageText.trim() && messageAttachments.length === 0) continue;
-      entries.push(entryFor(event, event.payload.role === "user" ? "你" : "Agent", messageText, event.payload.role, true, settings));
+      if (event.payload.role === "user") {
+        entries.push(entryFor(event, "你", messageText, "user", true, settings));
+        continue;
+      }
+      const isFinal = finalAssistantOfTurn.get(event.turnId) === (event.eventId ?? entryKey(event));
+      if (isFinal || messageAttachments.length > 0) {
+        // The answer, and anything carrying an attachment: both are content the reader
+        // came for, so they render in full.
+        entries.push(entryFor(event, "Agent", messageText, "assistant", true, settings));
+      } else {
+        const lead = messageText.trim().split(/\r?\n/).find((line) => line.trim()) ?? "";
+        const summary = lead.length > 48 ? `中间过程 · ${lead.slice(0, 48)}…` : `中间过程 · ${lead || "已处理"}`;
+        entries.push(collapsedEntry(event, "Agent", summary, messageText, "assistant step", settings));
+      }
     } else if (event.kind === "tool.started" || event.kind === "tool.completed") {
       const label = event.kind.endsWith("started") ? "工具开始" : "工具完成";
       const detail = event.payload.command ? String(event.payload.command) : `${event.payload.type ?? "tool"}${event.payload.status ? ` · ${event.payload.status}` : ""}`;

@@ -412,6 +412,28 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .event-entry.tool .event-body { color: var(--ink-2); font-size: 13px; }  /* 底板是浅色玻璃，次级文字不能再用 45% 黑 */
 .event-entry.error .event-body { color: var(--err); }
 
+/* 中间过程只占一行：说清在用什么工具做什么，细节折进去。手机上一屏能看更多对话。 */
+.tool-line { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.event-entry.tool-compact .event-body,
+.event-entry.step .event-body { padding-top: 1px; }
+.step-detail, .tool-output { margin-top: 4px; }
+.step-detail > summary,
+.tool-output > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-3, var(--ink-2));
+  opacity: .82;
+  list-style: none;
+}
+.step-detail > summary::-webkit-details-marker,
+.tool-output > summary::-webkit-details-marker { display: none; }
+.step-detail > summary::before,
+.tool-output > summary::before { content: "▸ "; }
+.step-detail[open] > summary::before,
+.tool-output[open] > summary::before { content: "▾ "; }
+.step-detail .message-markdown,
+.tool-output pre { margin-top: 6px; opacity: .9; font-size: 12px; }
+
 /* ---------- 无底板可读性：给字形描边，而不是给文字垫一层遮罩 ---------- */
 /* 文字层底板保持透明（用户要求），可读性全部来自整页遮罩的地板——**不再给字形描边**：
    之前那圈 1px + 2px 的白色 text-shadow 会把每个字的边缘糊掉，这正是"文字很模糊"的来源。
