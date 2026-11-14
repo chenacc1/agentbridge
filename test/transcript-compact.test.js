@@ -86,6 +86,37 @@ test("a reply that arrives as a stream stays collapsed while it is arriving", ()
   assert.doesNotMatch(rendered.split("<details")[0], /正在思考第一步/, "live text waits behind the disclosure");
 });
 
+test("a tool-only step does not steal the answer from the phone", () => {
+  // The bug behind "the phone shows nothing": DSH emits one assistant message per
+  // step, and a tool-only step carries no text. When the *last* of those was taken as
+  // "the answer", no message qualified for full rendering and the whole turn folded.
+  const store = buffer();
+  store.add(message({ seq: 1, turnId: "p:1", role: "user", text: "查一下端口" }));
+  store.add(message({ seq: 2, turnId: "p:1", text: "先看看谁占着 8787。" }));
+  store.add(message({ seq: 3, turnId: "p:1", text: "" }));            // tool-only step
+  store.add({ ...message({ seq: 4, turnId: "p:1", text: "" }), kind: "turn.completed", payload: {} });
+
+  const entries = buildEntries(store.events);
+  const rendered = entries.filter((entry) => entry.html.includes("先看看谁占着"));
+  assert.equal(rendered.length, 1);
+  assert.equal(rendered[0].className.includes("step"), false, "the text is the answer, so it renders in full");
+  assert.doesNotMatch(rendered[0].html, /step-detail/);
+});
+
+test("tool arguments that are a JSON blob still read as one short phrase", () => {
+  const store = buffer();
+  store.add(tool({
+    seq: 1,
+    turnId: "p:1",
+    type: "edit",
+    command: JSON.stringify({ file_path: "D:\\proj\\public\\transcript.js", content: "x".repeat(200) }),
+  }));
+  const rendered = buildEntries(store.events).at(-1).html;
+  const summary = rendered.split("<details")[0];
+  assert.match(summary, /调用 edit · D:\\proj\\public\\transcript\.js/);
+  assert.doesNotMatch(summary, /\{"file_path"/, "the raw JSON stays in the disclosure");
+});
+
 test("a message that carries an attachment is always rendered in full", () => {
   const store = buffer();
   store.add(message({ seq: 1, turnId: "p:1", role: "user", text: "截个图" }));

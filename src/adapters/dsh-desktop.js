@@ -99,21 +99,30 @@ export async function dshEventToBridge(record, state, emit) {
       }, extra);
     }
     case "tool/call":
+      // Remember what the call was: the result frame names only its call id, so
+      // without this every finished row reads `调用 tool`.
+      if (data.callId && data.name) {
+        state.toolNames ??= new Map();
+        state.toolNames.set(String(data.callId), String(data.name));
+      }
       return emit("tool.started", {
         type: data.name,
         command: data.arguments,
         callId: data.callId,
         dshEventSeq: event.seq,
       }, extra);
-    case "tool/result":
+    case "tool/result": {
+      const callId = data.message?.content?.[0]?.toolCallId;
+      const remembered = callId ? state.toolNames?.get(String(callId)) : null;
       return emit("tool.completed", {
-        type: data.message?.content?.[0]?.toolCallId ? "tool-result" : "tool",
-        callId: data.message?.content?.[0]?.toolCallId,
+        type: remembered ?? (callId ? "tool-result" : "tool"),
+        callId,
         text: contentText(data.message?.content?.[0]?.content),
         status: data.message?.content?.[0]?.isError || data.error ? "error" : "completed",
         error: data.error,
         dshEventSeq: event.seq,
       }, extra);
+    }
     case "turn/end": {
       const kind = data.reason?.kind;
       if (kind === "cancelled" || kind === "interrupted") {

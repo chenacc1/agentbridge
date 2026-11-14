@@ -252,17 +252,39 @@ function entryFor(event, label, text, className, supportsMarkdown, { formatMessa
 function toolSummary(event) {
   const payload = event.payload ?? {};
   const name = String(payload.type ?? payload.toolName ?? payload.name ?? "工具");
-  // "What is it doing" is the title when the Agent gave us one. A raw command is not a
-  // summary — the whole point of this row is to keep it out of the reader's way — so the
-  // command contributes at most its program name.
-  const stated = String(payload.title ?? payload.description ?? "").trim();
-  const command = String(payload.command ?? "").trim();
-  const program = command ? command.split(/\s+/)[0] : "";
-  const purpose = stated
-    ? (stated.length > 60 ? `${stated.slice(0, 60)}…` : stated)
-    : (program ? `${program} …` : "");
-  const suffix = payload.status ? ` · ${payload.status}` : "";
+  const purpose = describeToolTarget(payload);
+  const suffix = payload.status && !/^(completed|ok|success)$/i.test(String(payload.status)) ? ` · ${payload.status}` : "";
   return { name, purpose, suffix };
+}
+
+/**
+ * One short phrase for what a tool is working on.
+ *
+ * The raw arguments are frequently a JSON blob (`{"command": "cd D:\\..."}`), which
+ * is neither short nor readable — it used to show up verbatim as
+ * `调用 pwsh · {"command": …`. The inner field is what a person recognises.
+ */
+function describeToolTarget(payload) {
+  const stated = String(payload.title ?? payload.description ?? "").trim();
+  if (stated && !/^[[{]/.test(stated)) return stated.length > 60 ? `${stated.slice(0, 60)}…` : stated;
+
+  let argumentsValue = payload.command ?? payload.arguments ?? "";
+  if (argumentsValue && typeof argumentsValue === "object") {
+    argumentsValue = argumentsValue.command ?? argumentsValue.file_path ?? argumentsValue.path ?? argumentsValue.query ?? "";
+  }
+  let text = String(argumentsValue ?? "").trim();
+  if (/^[[{]/.test(text)) {
+    try {
+      const parsed = JSON.parse(text);
+      text = String(parsed?.command ?? parsed?.file_path ?? parsed?.path ?? parsed?.query ?? parsed?.pattern ?? "").trim();
+    } catch {
+      text = "";
+    }
+  }
+  if (!text) return "";
+  const firstLine = text.split(/\r?\n/).find((line) => line.trim()) ?? "";
+  const program = firstLine.split(/\s+/)[0] ?? "";
+  return program.length > 40 ? `${program.slice(0, 40)}…` : program;
 }
 
 function toolEntry(event, label, text, options) {
@@ -392,13 +414,17 @@ export function buildEntries(incomingEvents, options = {}) {
       settledInputs.set(event.payload.requestId, event.payload.outcome ?? "answered");
     }
   }
-  // Only the last assistant message of a turn is the answer; everything before it is
-  // the work that produced it.
+  // Only the last assistant message that actually says something is the answer: DSH
+  // emits one message per step, and the tool-only ones carry no text. Counting those
+  // made the map point at an empty message, so no message was treated as the answer
+  // and an entire turn stayed folded — which reads as "the phone shows nothing".
   const finalAssistantOfTurn = new Map();
   for (const event of relevant) {
-    if (event.kind === "message.completed" && event.payload?.role === "assistant") {
-      finalAssistantOfTurn.set(event.turnId, event.eventId ?? entryKey(event));
-    }
+    if (event.kind !== "message.completed" || event.payload?.role !== "assistant") continue;
+    const text = String(event.payload.text ?? "");
+    const attachments = Array.isArray(event.payload.attachments) ? event.payload.attachments : [];
+    if (!text.trim() && attachments.length === 0) continue;
+    finalAssistantOfTurn.set(event.turnId, event.eventId ?? entryKey(event));
   }
 
   const renderedDeltas = new Set();
