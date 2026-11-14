@@ -1045,7 +1045,9 @@ export class SessionManager {
     if (!NOTIFY_KINDS.has(kind)) return;
     return this.#notificationContext(session)
       .then((context) => this.notifier.send(kind, payload, context))
-      .catch(() => undefined);
+      // Swallowing this used to hide the real reason a chat stayed quiet: a context
+      // failure and a delivery failure looked identical from the outside — nothing.
+      .catch((error) => console.error(`AgentBridge notification for ${kind} failed: ${error?.message ?? error}`));
   }
 
   async #notificationContext(session) {

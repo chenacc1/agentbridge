@@ -1,6 +1,6 @@
 {
   "name": "@chenacc/agentbridge",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "Control local coding agents from a phone through a secure WeChat QR web console.",
   "license": "MIT",
   "type": "module",

@@ -424,6 +424,17 @@ export async function createBridge(options = {}) {
           accessKeyRequired: Boolean(config.accessKey),
           autostart: config.autostart === true,
           remoteProvider: config.remoteProvider,
+          // Why a notification did or did not arrive is otherwise invisible: the
+          // console shows a button, the phone shows nothing, and the reason is a log
+          // line nobody reads.
+          notifications: {
+            enabled: notifier.enabled,
+            format: notifier.format,
+            channel: notifier.channel ?? null,
+            muted: notifier.muted,
+            failures: notifier.failureCount ?? 0,
+            lastResult: notifier.lastResult ?? null,
+          },
         });
       }
 

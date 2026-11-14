@@ -157,9 +157,13 @@ export class Notifier {
   #fetch = null;
   #now = () => Date.now();
   #logger = console;
-  #timeoutMs = 5_000;
+  // 15 seconds, not 5: a WeChat push goes through a third-party service on the other
+  // side of the network, and the old cap aborted requests that would have arrived.
+  #timeoutMs = 15_000;
   #minIntervalMs = 15_000;
   #lastSent = new Map();
+  #lastResult = null;
+  #failures = 0;
 
   constructor(options = {}) {
     const format = String(options.format ?? "json").toLowerCase();
@@ -208,14 +212,14 @@ export class Notifier {
    * happened, and a failure is logged instead of thrown.
    */
   async send(kind, payload, context = {}) {
-    if (!this.enabled) return { sent: false, reason: "disabled" };
-    if (this.#muted) return { sent: false, reason: "muted" };
+    if (!this.enabled) return this.#remember(kind, { sent: false, reason: "disabled" });
+    if (this.#muted) return this.#remember(kind, { sent: false, reason: "muted" });
     if (kind !== "notify.test") {
       const key = `${context.sessionId ?? "-"}:${kind}`;
       const last = this.#lastSent.get(key);
       // The first signal for a pair always goes out; only repeats are damped.
       if (last !== undefined && this.#now() - last < this.#minIntervalMs) {
-        return { sent: false, reason: "rate-limited" };
+        return this.#remember(kind, { sent: false, reason: "rate-limited" });
       }
       this.#lastSent.set(key, this.#now());
       if (this.#lastSent.size > 500) this.#lastSent.delete(this.#lastSent.keys().next().value);
@@ -242,6 +246,19 @@ export class Notifier {
       payload: body,
     });
 
+    // One retry, and only for a transport failure: a provider that answered with an
+    // error code has already made up its mind, while a request that never completed
+    // (this network drops them now and then) is worth a second attempt. The old
+    // 5-second cap was the difference between "no message" and a delivered one.
+    let result = await this.#attempt(request);
+    if (!result.sent && result.reason === "error") {
+      result = await this.#attempt(request);
+      if (result.sent) result.retried = true;
+    }
+    return this.#remember(kind, result);
+  }
+
+  async #attempt(request) {
     try {
       const response = await this.#fetch(request.url, {
         method: "POST",
@@ -273,7 +290,25 @@ export class Notifier {
     } catch (error) {
       // A notification is best-effort by definition: never let it break a turn.
       this.#logger.warn?.(`AgentBridge notification failed: ${error instanceof Error ? error.message : String(error)}`);
-      return { sent: false, reason: "error" };
+      return { sent: false, reason: "error", error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /** Keep the last outcome so the console can say why nothing arrived. */
+  #remember(kind, result) {
+    this.#lastResult = { kind, at: new Date(this.#now()).toISOString(), ...result };
+    if (!result.sent && kind !== "notify.test") {
+      this.#failures += 1;
+    }
+    return result;
+  }
+
+  /** What happened to the most recent attempt, for `notify-test` and /api/health. */
+  get lastResult() {
+    return this.#lastResult;
+  }
+
+  get failureCount() {
+    return this.#failures;
   }
 }

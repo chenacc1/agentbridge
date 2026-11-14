@@ -89,19 +89,56 @@ test("the same event does not storm the chat, but a different event still gets t
 });
 
 test("a dead webhook never throws and never reports success", async () => {
+  let attempts = 0;
   const notifier = new Notifier({
     webhookUrl: "https://example.test/hook",
-    fetch: async () => { throw new Error("ECONNREFUSED"); },
+    fetch: async () => { attempts += 1; throw new Error("ECONNREFUSED"); },
     logger: { warn() {} },
   });
-  assert.deepEqual(await notifier.send("turn.completed", {}, { sessionId: "s1" }), { sent: false, reason: "error" });
+  const result = await notifier.send("turn.completed", {}, { sessionId: "s1" });
+  assert.equal(result.sent, false);
+  assert.equal(result.reason, "error");
+  assert.equal(attempts, 2, "a transport failure is retried once before giving up");
 
+  let rejected = 0;
   const rejecting = new Notifier({
     webhookUrl: "https://example.test/hook",
-    fetch: async () => ({ ok: false, status: 500 }),
+    fetch: async () => { rejected += 1; return { ok: false, status: 500 }; },
     logger: { warn() {} },
   });
   assert.deepEqual(await rejecting.send("turn.completed", {}, { sessionId: "s1" }), { sent: false, reason: "http-500" });
+  assert.equal(rejected, 1, "an HTTP answer is the provider's verdict, not a transport hiccup");
+});
+
+test("a request that times out is retried and can still arrive", async () => {
+  let attempts = 0;
+  const notifier = new Notifier({
+    webhookUrl: "https://example.test/hook",
+    format: "pushplus",
+    token: "t",
+    fetch: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("The operation was aborted due to timeout");
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 200, msg: "执行成功" }) };
+    },
+    logger: { warn() {} },
+  });
+  const result = await notifier.send("turn.completed", {}, { sessionId: "s1" });
+  assert.equal(result.sent, true);
+  assert.equal(result.retried, true);
+  assert.equal(attempts, 2);
+  assert.equal(notifier.lastResult?.sent, true, "the console can read what happened last");
+});
+
+test("the last outcome is readable, including a failure reason", async () => {
+  const notifier = new Notifier({
+    webhookUrl: "https://example.test/hook",
+    fetch: async () => ({ ok: false, status: 401 }),
+    logger: { warn() {} },
+  });
+  await notifier.send("turn.completed", {}, { sessionId: "s1" });
+  assert.equal(notifier.lastResult?.reason, "http-401");
+  assert.equal(notifier.failureCount, 1);
 });
 
 test("the notification link stays keyless unless the operator opts in", () => {
