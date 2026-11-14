@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { adapterSupports } from "./adapters/capabilities.js";
+import { MAX_IMAGES_PER_MESSAGE, persistEventImages } from "./inline-images.js";
 
 function publicSession(session) {
   return {
@@ -290,6 +291,15 @@ export class SessionManager {
 
   get(id) {
     return this.#sessions.get(id);
+  }
+
+  /** The bridge session currently bound to a provider conversation, if any. */
+  findByProvider(adapterId, providerSessionId) {
+    for (const session of this.#sessions.values()) {
+      if (session.adapterId !== adapterId) continue;
+      if ((session.providerSessionId ?? session.handle?.providerSessionId) === providerSessionId) return publicSession(session);
+    }
+    return null;
   }
 
   async shutdown() {
@@ -924,8 +934,28 @@ export class SessionManager {
     });
   }
 
+  /**
+   * Persist any image this event carries and describe it the way the phone renders it.
+   *
+   * The work itself lives in inline-images.js so it can be tested with a real store;
+   * here it is only wired to this session's project directory.
+   */
+  async #attachImages(session, kind, payload) {
+    return persistEventImages({
+      attachments: this.attachments,
+      sessionId: session.id,
+      kind,
+      payload,
+      base: this.projects?.get(session.projectAlias) ?? process.cwd(),
+    });
+  }
+
   async #emit(session, kind, payload, extra = {}) {
     if (kind === "message.delta") return this.#queueDelta(session, payload, extra);
+    // Images become attachments before anything is stored: a message carrying base64
+    // would otherwise land in the event log verbatim, and the phone has no way to
+    // render it. See src/inline-images.js for the two shapes this recognises.
+    payload = await this.#attachImages(session, kind, payload);
     // Anything the Agent says after a dispatch proves it picked the turn up, and a
     // turn end is the only thing that can release `running` — so both watchdogs are
     // disarmed here, before the state machine below runs.

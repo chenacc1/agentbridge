@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { splitInlineImages } from "../inline-images.js";
 
 const MAX_QUESTIONS = 10;
 const MAX_OPTIONS = 25;
@@ -72,23 +73,31 @@ export async function dshEventToBridge(record, state, emit) {
         return emit("adapter.output", { stream: "reasoning", text: data.chunk.text, dshEventSeq: event.seq }, extra);
       }
       return undefined;
-    case "assistant/message":
+    case "assistant/message": {
+      const { images, content } = splitInlineImages(data.message?.content);
       return emit("message.completed", {
         role: "assistant",
-        text: contentText(data.message?.content),
+        text: contentText(content),
+        ...(images.length ? { inlineImages: images } : {}),
         provider: data.message?.source?.provider ?? state.provider,
         model: data.message?.source?.model ?? state.model,
         usage: data.usage,
         dshEventSeq: event.seq,
       }, extra);
-    case "user/message":
+    }
+    case "user/message": {
       if (origin === "phone") return undefined;
+      // A screenshot pasted into the desktop conversation reaches the phone the same
+      // way an agent's reply does: as an attachment, not as base64 in the log.
+      const { images, content } = splitInlineImages(data.content);
       return emit("message.completed", {
         role: "user",
-        text: contentText(data.content),
+        text: contentText(content),
+        ...(images.length ? { inlineImages: images } : {}),
         source: "dsh-desktop",
         dshEventSeq: event.seq,
       }, extra);
+    }
     case "tool/call":
       return emit("tool.started", {
         type: data.name,

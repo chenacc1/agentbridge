@@ -274,10 +274,13 @@ function toolEntry(event, label, text, options) {
   const details = body
     ? `<details class="tool-output"><summary>详情</summary><pre>${escapeHtml(body)}</pre></details>`
     : "";
+  // A screenshot produced by a tool is the result, not a detail: it stays visible
+  // under the one-line summary while the command and its text stay folded away.
+  const attachments = attachmentsHtml(event.payload?.attachments);
   const entry = {
     key: entryKey(event),
     className: "tool tool-compact",
-    html: `<time class="event-time">${formatTime(event.time, options.formatMessageTime)}</time><div class="event-body"><strong>${escapeHtml(label)}</strong><p class="tool-line">${escapeHtml(headline)}</p>${details}</div>`,
+    html: `<time class="event-time">${formatTime(event.time, options.formatMessageTime)}</time><div class="event-body"><strong>${escapeHtml(label)}</strong><p class="tool-line">${escapeHtml(headline)}</p>${attachments}${details}</div>`,
   };
   return rememberEntry(options.cache, event, entry);
 }
