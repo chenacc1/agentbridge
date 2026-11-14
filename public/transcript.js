@@ -28,14 +28,35 @@ export function indexDeltas(events, index = new Map()) {
   return index;
 }
 
+/**
+ * Keep the buffer in sequence order, whatever order events arrive in.
+ *
+ * Appending blindly was wrong in a way that only shows up on a real phone: when the
+ * event stream reconnects it replays from the last id it saw, so a batch of *older*
+ * events lands after the newest ones already on screen, and the transcript's clock
+ * visibly jumps backwards (11:37 above 10:07). Appending is still the common case —
+ * the scan almost always stops on the first comparison.
+ */
+function insertInOrder(events, event) {
+  const seq = Number.isFinite(event.seq) ? event.seq : Infinity;
+  let index = events.length;
+  while (index > 0) {
+    const previous = Number.isFinite(events[index - 1].seq) ? events[index - 1].seq : -Infinity;
+    if (previous <= seq) break;
+    index -= 1;
+  }
+  if (index === events.length) events.push(event);
+  else events.splice(index, 0, event);
+  return event;
+}
+
 // Token deltas are folded into a single cumulative entry per turn, matching the
 // bridge. Without this a long turn's tokens fill the whole buffer and push the
 // actual conversation out of it, which is why replies used to arrive missing or
 // half-rendered.
 export function absorbEvent(events, deltaIndex, event) {
   if (event.kind !== "message.delta") {
-    events.push(event);
-    return event;
+    return insertInOrder(events, event);
   }
   const text = String(event.payload?.text ?? "");
   const existing = deltaIndex.get(deltaKeyOf(event));
@@ -51,8 +72,7 @@ export function absorbEvent(events, deltaIndex, event) {
   }
   const entry = { ...event, payload: { ...event.payload, offset: 0 } };
   deltaIndex.set(deltaKeyOf(event), entry);
-  events.push(entry);
-  return entry;
+  return insertInOrder(events, entry);
 }
 
 // Trimming normally drops the oldest entries, which is exactly what a freshly
@@ -347,7 +367,16 @@ function collapsedEntry(event, label, summary, text, className, options) {
 }
 
 /** Turn a session's events into the list of transcript entries to display. */
-export function buildEntries(relevant, options = {}) {
+export function buildEntries(incomingEvents, options = {}) {
+  // The buffer should already be in sequence order; sorting here means a page that
+  // was assembled before that was true (or by an older client) still renders in
+  // chronological order instead of jumping backwards mid-conversation.
+  const relevant = [...incomingEvents].sort((left, right) => {
+    const a = Number.isFinite(left.seq) ? left.seq : Infinity;
+    const b = Number.isFinite(right.seq) ? right.seq : Infinity;
+    if (a !== b) return a - b;
+    return (Date.parse(left.time) || 0) - (Date.parse(right.time) || 0);
+  });
   const statusLabel = options.statusLabel ?? ((kind) => DEFAULT_STATUS_LABELS[kind] ?? kind);
   const settings = { cache: entryCache, formatMessageTime: options.formatMessageTime, math: options.math };
   const { textByTurn, completedTurns } = foldDeltas(relevant);
