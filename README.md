@@ -61,7 +61,7 @@ npx @chenacc/agentbridge        # 起桥并直接打印二维码
 
 ## 主要能力
 
-- **扫码配对**：一次性、5 分钟有效的二维码；配对后收藏固定回访地址，之后免扫码进入。
+- **扫码配对**：一次性、5 分钟有效的二维码；配对后收藏固定回访地址，之后免扫码进入。常用就自动续期（默认 72 小时窗口，用一次续一次），长期不用才会过期。
 - **跨网络直接可用**：默认自动开 Cloudflare 隧道，二维码就是公网 https 地址，手机无需安装任何 App。
 - **工作区 → 会话导航**：一个抽屉管理「Agent → 项目 → 会话」，Bridge 重启后历史与会话不丢失。
 - **完整对话控制**：流式输出、停止、接管输入、翻看历史，表格 / 公式 / 代码块正确渲染。
@@ -383,12 +383,14 @@ agentbridge phone --agent deepseek-harness
 | `AGENTBRIDGE_PUBLIC_ORIGIN` | 自动（公网隧道或局域网地址） | 写进二维码的访问地址；设了它就不再自动开隧道 |
 | `AGENTBRIDGE_ACCESS_KEY` | 未设置 | 访问密钥；对公网开放时自动生成并写入 `access-key` 文件 |
 | `AGENTBRIDGE_PAIRING_TTL_MS` | `300000` | 配对码有效期（5 分钟） |
-| `AGENTBRIDGE_SESSION_TTL_MS` | `259200000` | 设备会话有效期（72 小时） |
+| `AGENTBRIDGE_SESSION_TTL_MS` | `259200000` | 设备会话有效期（72 小时；期间用到它就自动续期，长期不用才过期） |
 | `AGENTBRIDGE_CLAUDE_MODEL` | 供应商默认 | 可选的 Claude / Kimi 模型 ID |
 | `AGENTBRIDGE_NOTIFY_WEBHOOK` | 未设置 | 通知 Webhook；未设置时该功能静默 |
 | `AGENTBRIDGE_NOTIFY_IMPORT` | 未设置 | 通知设置存在旧数据目录时，指向它一次即可自动迁过来 |
 
 > 通知设置（webhook / token / 静默开关）保存在**桥的数据目录**下的 `notify.json`，默认是 `%USERPROFILE%\.agentbridge`。DSH 插件接管网关后数据目录换过位置，老配置如果留在原来的 `.agentbridge` 里，用 `AGENTBRIDGE_NOTIFY_IMPORT=<旧目录>` 启动一次就会自动迁过去；也可以直接在桌面控制台的「通知」面板重填一次。桥启动日志里有一行 `Notifications: pushplus/clawbot` 或 `Notifications: off — no webhook configured in …`，能直接看出它到底读到了哪个文件。
+>
+> `notify.json` 里的 `channel` 是**可选**的，填了就必须和 PushPlus 账号里已经绑定的渠道一致。PushPlus 对没绑定的渠道照样返回 `{"code":200,"msg":"Success"}`，但消息不会送到任何地方——所以「接口说成功、微信没收到」基本都是这一项写错了。实测：不填 `channel`（账号默认渠道）和 `channel: "wechat"` 能到，`channel: "clawbot"` 在未绑定 ClawBot 的账号上收不到。拿不准就删掉这一项。
 
 **跨网络（CLI 与插件都认）：**
 

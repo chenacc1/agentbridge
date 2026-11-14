@@ -1059,6 +1059,15 @@ export async function startBridge() {
   // when the DSH plugin started hosting the bridge). Say where it looked.
   if (bridge.notifier.enabled) {
     console.log(`Notifications: ${bridge.notifier.format}${bridge.notifier.channel ? `/${bridge.notifier.channel}` : ""}${bridge.notifier.muted ? " (muted)" : ""}`);
+    // PushPlus answers 200 for a channel the account has not bound, so a wrong
+    // channel looks exactly like a delivered message from here. Say it out loud,
+    // once, where someone will see it while setting this up.
+    if (bridge.notifier.channel) {
+      console.log(
+        `Notifications: channel "${bridge.notifier.channel}" is set — if messages never arrive, `
+        + "remove the channel from notify.json to use the account's default channel",
+      );
+    }
   } else {
     console.log(
       `Notifications: off — no webhook configured in ${path.join(bridge.config.dataDir, "notify.json")} `
